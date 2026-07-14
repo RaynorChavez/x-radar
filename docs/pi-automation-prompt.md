@@ -68,13 +68,15 @@ Never like, repost, reply, follow, bookmark, message, or change account settings
    `PYTHONPATH=src python3 -m xradar --db var/x-radar.sqlite archive <raw> --kind raw`
    `PYTHONPATH=src python3 -m xradar --db var/x-radar.sqlite archive <capture> --kind enriched`
    `PYTHONPATH=src python3 -m xradar --db var/x-radar.sqlite export public/feed.json --limit 100`
-   Report `site-progress syncing --target <url> [--request-id <id>]`, then attempt
+   Report `site-progress syncing --target <url> [--request-id <id>] [--target-unique 150]
+   [--preference-version <version>]`, then attempt
    `PYTHONPATH=src python3 -m xradar --db var/x-radar.sqlite sync`.
    A sync failure must never invalidate or remove the local scan.
 8. If this was directed, mark the request complete with its observed result
    count. If any step after claiming it fails, mark it error with a brief reason.
    Finally report `site-progress complete --target <url> [--request-id <id>]
-   --scan-id <scan_id> --observed <count>`.
+   --scan-id <scan_id> --observed <count> [--target-unique 150]
+   [--preference-version <version>]`.
 9. Report observed versus target, per-source planned/unique counts, new/duplicate,
    keep/candidate/discard, signal and attachment counts, the strongest item, and
    any newly promoted topic account or newly downranked account.

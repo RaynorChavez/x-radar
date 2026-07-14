@@ -1,5 +1,15 @@
 import { collectorAuthorized, ensureRadarDb } from "../../../../lib/d1";
 
+type RadarDb = Awaited<ReturnType<typeof ensureRadarDb>>;
+type BatchStatements = Parameters<RadarDb["batch"]>[0];
+
+async function batchInChunks(db: RadarDb, statements: BatchStatements) {
+  const batchSize = 50;
+  for (let start = 0; start < statements.length; start += batchSize) {
+    await db.batch(statements.slice(start, start + batchSize));
+  }
+}
+
 type CapturePost = {
   post_id: string; url: string; handle: string; author?: string | null;
   profile_image_url?: string | null; text: string;
@@ -50,7 +60,7 @@ export async function POST(request: Request) {
     ? await db.prepare(`SELECT COUNT(*) count FROM posts WHERE post_id IN (${posts.map(() => "?").join(",")})`)
       .bind(...posts.map((post) => post.post_id)).first<{ count: number }>()
     : { count: 0 };
-  if (posts.length) await db.batch(posts.map((post) => db.prepare(`
+  if (posts.length) await batchInChunks(db, posts.map((post) => db.prepare(`
     INSERT INTO posts (
       post_id, url, handle, author, profile_image_url, text, posted_at, captured_at,
       first_seen_at, last_seen_at, is_ad, is_reply, is_quote,
@@ -74,7 +84,7 @@ export async function POST(request: Request) {
     post.article ? JSON.stringify(post.article) : null, JSON.stringify(post.engagement ?? {}),
     post.score ?? 0, post.decision ?? "candidate", JSON.stringify(post.reasons ?? []),
   )));
-  if (posts.length) await db.batch(posts.map((post, observedIndex) => db.prepare(`
+  if (posts.length) await batchInChunks(db, posts.map((post, observedIndex) => db.prepare(`
     INSERT INTO post_observations (
       id, scan_id, post_id, captured_at, observed_index, score, decision, is_ad, is_reply, is_quote,
       preference_version,topic_matches_json
@@ -94,7 +104,7 @@ export async function POST(request: Request) {
     payload.preference_version ?? 0, JSON.stringify(post.topic_matches ?? []),
   )));
   const acquisitions = payload.acquisitions ?? [];
-  if (acquisitions.length) await db.batch(acquisitions.map((item) => db.prepare(`
+  if (acquisitions.length) await batchInChunks(db, acquisitions.map((item) => db.prepare(`
     INSERT INTO run_acquisitions(
       acquisition_id,scan_id,kind,target,topic_key,topic_label,planned_quota,
       observed_count,unique_count,status,error,duration_seconds
@@ -111,12 +121,12 @@ export async function POST(request: Request) {
     const observationId = `${scanId}:${post.post_id}`;
     return [{ id: `${observationId}:${acquisitionId}`, observationId, acquisitionId, isPrimary: sourceIndex === 0 }];
   }));
-  if (provenance.length) await db.batch(provenance.map((item) => db.prepare(`
+  if (provenance.length) await batchInChunks(db, provenance.map((item) => db.prepare(`
     INSERT INTO observation_acquisitions(id,observation_id,acquisition_id,is_primary)
     VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING
   `).bind(item.id, item.observationId, item.acquisitionId, item.isPrimary ? 1 : 0)));
   const reputation = payload.account_reputation ?? [];
-  if (reputation.length) await db.batch(reputation.map((account) => db.prepare(`
+  if (reputation.length) await batchInChunks(db, reputation.map((account) => db.prepare(`
     INSERT INTO account_reputation
       (handle, disposition, strike_points, confidence, reasons_json, notes, operator_override, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)

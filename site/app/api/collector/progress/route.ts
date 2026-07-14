@@ -14,6 +14,10 @@ export async function POST(request: Request) {
     const now = new Date().toISOString();
     const authStatus = body.errorCode === "AUTH_REQUIRED" ? "required" : "ok";
     const db = await ensureRadarDb();
+    const current = await db.prepare("SELECT target_unique targetUnique,preference_version preferenceVersion FROM collector_state WHERE id=1")
+      .first<{ targetUnique: number; preferenceVersion: number }>();
+    const targetUnique = body.targetUnique ?? current?.targetUnique ?? 100;
+    const preferenceVersion = body.preferenceVersion ?? current?.preferenceVersion ?? 0;
     await db.prepare(`INSERT INTO collector_state(
       id,phase,target,request_id,scan_id,observed,target_unique,preference_version,source_progress_json,
       auth_status,last_error,started_at,updated_at
@@ -28,7 +32,7 @@ export async function POST(request: Request) {
       started_at=CASE WHEN excluded.phase='collecting' THEN excluded.started_at ELSE collector_state.started_at END,
       updated_at=excluded.updated_at`).bind(
         body.phase, body.target ?? null, body.requestId ?? null, body.scanId ?? null,
-        body.observed ?? 0, body.targetUnique ?? 100, body.preferenceVersion ?? 0,
+        body.observed ?? 0, targetUnique, preferenceVersion,
         JSON.stringify(body.sourceProgress ?? {}), authStatus, body.error ?? null, body.startedAt ?? now, now,
       ).run();
     if (body.requestId) {

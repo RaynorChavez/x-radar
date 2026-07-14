@@ -118,6 +118,8 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(discoveryMigration, /`bootstrap_topics_json`/);
   assert.match(ingest, /xcancel\.com\/i\/article/);
   assert.match(ingest, /INSERT INTO post_observations/);
+  assert.match(ingest, /batchInChunks/);
+  assert.match(ingest, /batchSize = 50/);
   assert.match(feed, /view === "history"/);
   assert.match(feed, /sort === "signal"/);
   assert.match(feed, /downrank.*-.40/s);
@@ -130,6 +132,7 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(status, /reliability/);
   assert.match(status, /stale_collection/);
   assert.match(progress, /collecting.*ranking.*syncing.*complete.*error/s);
+  assert.match(progress, /current\?\.targetUnique/);
   assert.match(heartbeat, /last_backup_at/);
   assert.match(runs, /durationSeconds/);
   assert.match(observations, /capturedAt/);
