@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from selenium.common.exceptions import TimeoutException
+
 from collector.firefox_collect import (
     EXTRACT_POST, _XCancelArticleParser, collect_target, hydrate_post_details, legacy_kind, load_plan, parse_args,
     validate_post_detail_target, validate_target, validate_xcancel_article_target,
@@ -88,6 +90,7 @@ class CollectorContractTests(unittest.TestCase):
         self.assertIn('article-cover-image', EXTRACT_POST)
         self.assertIn('tweet-text-show-more-link', EXTRACT_POST)
         self.assertIn('_needs_text_hydration: needsTextHydration', EXTRACT_POST)
+        self.assertIn('_needs_content_hydration: !tweetBody && !articleContent', EXTRACT_POST)
         self.assertIn('`https://xcancel.com/i/article/${articleId}`', EXTRACT_POST)
 
     def test_article_hydration_url_must_match_a_captured_post(self):
@@ -112,6 +115,17 @@ class CollectorContractTests(unittest.TestCase):
         self.assertEqual(1, hydrate_post_details(driver, posts, "2026-07-14T00:00:00Z", time.monotonic() + 5))
         self.assertEqual("Complete detail text with the missing conclusion.", posts["42"]["text"])
         self.assertEqual([{"acquisition_id": "home"}], posts["42"]["discovery_sources"])
+
+    def test_empty_timeline_shell_is_hydrated_from_its_exact_status_page(self):
+        url = "https://x.com/researcher/status/43"
+        post = {
+            "post_id": "43", "url": url, "handle": "@researcher", "text": "",
+            "_needs_content_hydration": True, "discovery_sources": [{"acquisition_id": "search"}],
+        }
+        driver = FakeDriver({url: [{**post, "text": "The complete post body from the detail page."}]})
+        posts = {"43": post}
+        self.assertEqual(1, hydrate_post_details(driver, posts, "2026-07-14T00:00:00Z", time.monotonic() + 5))
+        self.assertEqual("The complete post body from the detail page.", posts["43"]["text"])
 
     def test_xcancel_fallback_is_fixed_to_numeric_article_page_and_extracts_only_article_blocks(self):
         self.assertEqual(
@@ -166,6 +180,26 @@ class CollectorContractTests(unittest.TestCase):
         self.assertEqual("complete", result["status"])
         self.assertEqual(1, result["unique"])
         self.assertEqual({"1"}, set(posts))
+
+    def test_navigation_timeout_is_isolated_to_one_acquisition(self):
+        class TimeoutDriver(FakeDriver):
+            def get(self, url):
+                self.current_url = url
+                raise TimeoutException("slow page")
+
+        posts = {}
+        result = collect_target(
+            TimeoutDriver({}),
+            {"id": "slow", "kind": "topic_search", "url": "https://x.com/search?q=slow", "quota": 10},
+            posts,
+            "2026-07-14T00:00:00Z",
+            time.monotonic() + 5,
+            150,
+            0,
+        )
+        self.assertEqual("error", result["status"])
+        self.assertIn("NAVIGATION_TIMEOUT", result["error"])
+        self.assertEqual({}, posts)
 
 
 if __name__ == "__main__":

@@ -391,10 +391,36 @@ def normalize_ranked_post(post: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def canonical_content_tier(post: dict[str, Any]) -> int:
+    """Return how much rankable content an observation actually captured.
+
+    Article bodies outrank post text, which outranks link/media-only cards.
+    This deliberately measures capture completeness, not signal quality.
+    """
+    article = post.get("article") if isinstance(post.get("article"), dict) else {}
+    if str(article.get("content") or "").strip():
+        return 3
+    if str(post.get("text") or "").strip():
+        return 2
+    if post.get("external_links") or post.get("media"):
+        return 1
+    return 0
+
+
 def upsert_post(conn: sqlite3.Connection, post: dict[str, Any]) -> bool:
     post = normalize_ranked_post(post)
     post_id = str(post["post_id"])
-    existed = conn.execute("SELECT 1 FROM posts WHERE post_id=?", (post_id,)).fetchone() is not None
+    existing = conn.execute("""
+        SELECT text,external_links_json,media_json,article_json FROM posts WHERE post_id=?
+    """, (post_id,)).fetchone()
+    existed = existing is not None
+    existing_tier = canonical_content_tier({
+        "text": existing["text"] if existing else "",
+        "external_links": json.loads(existing["external_links_json"] or "[]") if existing else [],
+        "media": json.loads(existing["media_json"] or "[]") if existing else [],
+        "article": json.loads(existing["article_json"] or "null") if existing else None,
+    })
+    promote_canonical = not existed or canonical_content_tier(post) >= existing_tier
     captured_at = post.get("captured_at") or utcnow()
     article = post.get("article")
     article_id = str(article["id"]) if isinstance(article, dict) and article.get("id") else None
@@ -415,7 +441,8 @@ def upsert_post(conn: sqlite3.Connection, post: dict[str, Any]) -> bool:
             profile_image_url=COALESCE(excluded.profile_image_url, posts.profile_image_url),
             text=CASE WHEN excluded.text != '' THEN excluded.text ELSE posts.text END,
             posted_at=COALESCE(excluded.posted_at, posts.posted_at),
-            captured_at=excluded.captured_at, last_seen_at=excluded.last_seen_at,
+            captured_at=CASE WHEN ? THEN excluded.captured_at ELSE posts.captured_at END,
+            last_seen_at=excluded.last_seen_at,
             is_ad=excluded.is_ad, is_reply=excluded.is_reply, is_quote=excluded.is_quote,
             source_url=COALESCE(excluded.source_url, posts.source_url),
             xcancel_url=COALESCE(excluded.xcancel_url, posts.xcancel_url),
@@ -425,8 +452,11 @@ def upsert_post(conn: sqlite3.Connection, post: dict[str, Any]) -> bool:
                 THEN excluded.media_json ELSE posts.media_json END,
             article_json=COALESCE(excluded.article_json, posts.article_json),
             engagement_json=excluded.engagement_json,
-            score=excluded.score, decision=excluded.decision, reasons_json=excluded.reasons_json,
-            score_components_json=COALESCE(excluded.score_components_json, posts.score_components_json)
+            score=CASE WHEN ? THEN excluded.score ELSE posts.score END,
+            decision=CASE WHEN ? THEN excluded.decision ELSE posts.decision END,
+            reasons_json=CASE WHEN ? THEN excluded.reasons_json ELSE posts.reasons_json END,
+            score_components_json=CASE WHEN ? THEN COALESCE(excluded.score_components_json, posts.score_components_json)
+                ELSE posts.score_components_json END
     """, (
         post_id, post["url"], normalize_handle(post["handle"]), post.get("author"),
         post.get("profile_image_url"), post.get("text", ""), post.get("posted_at"), captured_at,
@@ -437,11 +467,14 @@ def upsert_post(conn: sqlite3.Connection, post: dict[str, Any]) -> bool:
         float(post.get("score", 0)), post.get("decision", "candidate"),
         _json(post.get("reasons"), []),
         _json(post.get("score_components"), {}) if post.get("score_components") else None,
+        int(promote_canonical), int(promote_canonical), int(promote_canonical),
+        int(promote_canonical), int(promote_canonical),
     ))
     try:
+        canonical = conn.execute("SELECT text,author,handle FROM posts WHERE post_id=?", (post_id,)).fetchone()
         conn.execute("DELETE FROM posts_fts WHERE post_id=?", (post_id,))
         conn.execute("INSERT INTO posts_fts(post_id,text,author,handle) VALUES(?,?,?,?)", (
-            post_id, post.get("text", ""), post.get("author", ""), normalize_handle(post["handle"]),
+            post_id, canonical["text"], canonical["author"] or "", canonical["handle"],
         ))
     except sqlite3.OperationalError:
         pass

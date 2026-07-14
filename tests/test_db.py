@@ -290,6 +290,47 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(2, self.conn.execute("SELECT count(*) FROM post_observations").fetchone()[0])
         self.assertEqual(2, self.conn.execute("SELECT count(*) FROM sync_outbox").fetchone()[0])
 
+    def test_incomplete_repeat_preserves_richer_canonical_but_records_observation(self):
+        complete = {
+            "post_id": "article", "url": "https://x.com/lab/status/article", "handle": "lab",
+            "text": "A framework for frontier AI.",
+            "article": {"id": "article", "title": "Frontier AI", "content": "Full primary-source article body."},
+            "score": .91, "decision": "keep", "reasons": ["Primary source"],
+        }
+        ingest_capture(self.conn, {
+            "scan_id": "complete", "captured_at": "2026-07-14T01:00:00Z", "posts": [complete],
+        })
+        ingest_capture(self.conn, {
+            "scan_id": "empty-repeat", "captured_at": "2026-07-14T02:00:00Z", "posts": [{
+                **complete, "text": "", "article": None, "score": .05, "decision": "discard",
+                "reasons": ["No visible text or source metadata"],
+            }],
+        })
+        canonical = self.conn.execute(
+            "SELECT text,article_json,score,decision,reasons_json,captured_at,last_seen_at FROM posts WHERE post_id='article'"
+        ).fetchone()
+        self.assertEqual("A framework for frontier AI.", canonical["text"])
+        self.assertIn("Full primary-source article body.", canonical["article_json"])
+        self.assertAlmostEqual(.91, canonical["score"])
+        self.assertEqual("keep", canonical["decision"])
+        self.assertEqual("2026-07-14T01:00:00Z", canonical["captured_at"])
+        self.assertEqual("2026-07-14T02:00:00Z", canonical["last_seen_at"])
+        observations = self.conn.execute(
+            "SELECT score,decision FROM post_observations WHERE post_id='article' ORDER BY captured_at"
+        ).fetchall()
+        self.assertEqual([(0.91, "keep"), (0.05, "discard")], [tuple(row) for row in observations])
+        self.assertEqual("article", search_posts(self.conn, "frontier")[0]["post_id"])
+
+    def test_equally_complete_repeat_can_refresh_canonical_ranking(self):
+        base = {
+            "post_id": "post", "url": "https://x.com/lab/status/post", "handle": "lab",
+            "text": "A substantive update", "score": .4, "decision": "candidate",
+        }
+        upsert_post(self.conn, {**base, "captured_at": "2026-07-14T01:00:00Z"})
+        upsert_post(self.conn, {**base, "score": .8, "decision": "keep", "captured_at": "2026-07-14T02:00:00Z"})
+        row = self.conn.execute("SELECT score,decision,captured_at FROM posts WHERE post_id='post'").fetchone()
+        self.assertEqual((.8, "keep", "2026-07-14T02:00:00Z"), tuple(row))
+
     def test_reingesting_same_scan_is_idempotent(self):
         payload = {"scan_id": "one-scan", "captured_at": "2026-07-14T00:00:00Z", "host": "test", "posts": [
             {"post_id": "idem", "url": "https://x.com/a/status/idem", "handle": "a", "text": "idempotent"}

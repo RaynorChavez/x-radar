@@ -136,6 +136,10 @@ return {
   external_links: externalLinks, media, article,
   _needs_article_hydration: Boolean(articlePreview && !articleView),
   _needs_text_hydration: needsTextHydration,
+  // Timeline virtualization occasionally yields a shell with a valid status
+  // ID but none of the body/article content. Revisit that exact status page
+  // before allowing the observation to be ranked.
+  _needs_content_hydration: !tweetBody && !articleContent,
   engagement: {
     replies: metric("reply", "repl"), reposts: metric("retweet", "repost"),
     likes: metric("like", "like"), bookmarks: metric("bookmark", "bookmark"),
@@ -328,7 +332,21 @@ def collect_target(driver, target: dict, posts: dict[str, dict], captured_at: st
     seen_on_target: set[str] = set()
     source = _source_ref(target)
     stagnant = 0
-    driver.get(url)
+    try:
+        driver.get(url)
+    except TimeoutException as error:
+        # A single slow search/account page must not abort the complete mixed
+        # period. Stop the partial navigation and let later/backfill targets run.
+        try:
+            driver.execute_script("window.stop()")
+        except JavascriptException:
+            pass
+        current_url = str(getattr(driver, "current_url", ""))
+        if "/login" in current_url or "/i/flow/login" in current_url:
+            raise RuntimeError("AUTH_REQUIRED: the persistent Pi Firefox profile is not signed in to X") from error
+        result.update(status="error", error=f"NAVIGATION_TIMEOUT: page load exceeded 60 seconds at {url}")
+        result["duration_seconds"] = round(time.monotonic() - started)
+        return result
     try:
         WebDriverWait(driver, 20).until(
             lambda d: d.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]')
@@ -405,17 +423,21 @@ def report_mixed_progress(plan: dict, acquisitions: list[dict], observed: int) -
 
 
 def hydrate_post_details(driver, posts: dict[str, dict], captured_at: str,
-                         global_deadline: float, limit: int = 12) -> int:
-    candidates = []
+                         global_deadline: float, limit: int = 24) -> int:
+    candidates: list[tuple[int, dict]] = []
     for post in posts.values():
         needs_article = bool(post.pop("_needs_article_hydration", False))
         needs_text = bool(post.pop("_needs_text_hydration", False))
-        if needs_article or needs_text:
-            candidates.append(post)
-        if len(candidates) >= limit:
-            break
+        needs_content = bool(post.pop("_needs_content_hydration", False))
+        if needs_article or needs_text or needs_content:
+            # Article previews first, then entirely empty shells, then ordinary
+            # truncated posts. The bound and shared deadline prevent unbounded
+            # status-page fan-out.
+            priority = 0 if needs_article else 1 if needs_content else 2
+            candidates.append((priority, post))
+    candidates = sorted(candidates, key=lambda item: item[0])[:limit]
     hydrated = 0
-    for post in candidates:
+    for _, post in candidates:
         remaining = global_deadline - time.monotonic()
         if remaining <= 1:
             break
@@ -423,7 +445,7 @@ def hydrate_post_details(driver, posts: dict[str, dict], captured_at: str,
         try:
             url = validate_post_detail_target(str(post["url"]), str(post["post_id"]))
             driver.get(url)
-            elements = WebDriverWait(driver, min(30, max(1, remaining))).until(
+            elements = WebDriverWait(driver, min(15, max(1, remaining))).until(
                 lambda d: d.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]')
             )
             for element in elements:
@@ -444,6 +466,7 @@ def hydrate_post_details(driver, posts: dict[str, dict], captured_at: str,
             post["discovery_sources"] = discovery_sources
             post.pop("_needs_article_hydration", None)
             post.pop("_needs_text_hydration", None)
+            post.pop("_needs_content_hydration", None)
             hydrated += 1
             continue
 
