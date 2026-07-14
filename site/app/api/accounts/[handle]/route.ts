@@ -1,4 +1,4 @@
-import { ensureRadarDb } from "../../../../lib/d1";
+import { collectorAuthorized, ensureRadarDb } from "../../../../lib/d1";
 
 const allowed = new Set(["allow", "normal", "watch", "downrank", "blocked"]);
 
@@ -21,5 +21,28 @@ export async function PUT(request: Request, context: { params: Promise<{ handle:
     return Response.json({ account: payload });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Account update failed" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request, context: { params: Promise<{ handle: string }> }) {
+  if (!collectorAuthorized(request)) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const params = await context.params;
+    const handle = `@${params.handle.replace(/^@/, "").toLowerCase()}`;
+    const db = await ensureRadarDb();
+    const row = await db.prepare("SELECT COUNT(*) count FROM posts WHERE lower(handle)=?")
+      .bind(handle).first<{ count: number }>();
+    await db.batch([
+      db.prepare(`DELETE FROM observation_acquisitions WHERE observation_id IN (
+        SELECT id FROM post_observations WHERE post_id IN (SELECT post_id FROM posts WHERE lower(handle)=?)
+      )`).bind(handle),
+      db.prepare("DELETE FROM post_observations WHERE post_id IN (SELECT post_id FROM posts WHERE lower(handle)=?)").bind(handle),
+      db.prepare("DELETE FROM user_post_state WHERE post_id IN (SELECT post_id FROM posts WHERE lower(handle)=?)").bind(handle),
+      db.prepare("DELETE FROM posts WHERE lower(handle)=?").bind(handle),
+      db.prepare("DELETE FROM account_reputation WHERE lower(handle)=?").bind(handle),
+    ]);
+    return Response.json({ handle, postsPurged: row?.count ?? 0 });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "Account purge failed" }, { status: 500 });
   }
 }

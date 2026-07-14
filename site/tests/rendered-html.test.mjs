@@ -35,6 +35,7 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(dashboard, /Include replies and threads/);
   assert.match(dashboard, /Read on XCancel/);
   assert.match(dashboard, /article-card/);
+  assert.match(dashboard, /article\?\.xcancelUrl/);
   assert.match(dashboard, /media-grid/);
   assert.match(dashboard, /Referenced websites/);
   assert.match(dashboard, /ProfileAvatar/);
@@ -130,6 +131,9 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(search, /posts_fts MATCH/);
   assert.match(state, /pinnedAt.*savedAt/s);
   assert.match(account, /operator_override/);
+  assert.match(account, /export async function DELETE/);
+  assert.match(account, /collectorAuthorized/);
+  assert.match(account, /observation_acquisitions/);
   assert.match(claim, /status='queued'/);
   assert.match(status, /reliability/);
   assert.match(status, /stale_collection/);

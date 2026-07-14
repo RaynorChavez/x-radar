@@ -40,7 +40,7 @@ export type RadarPost = {
   }>;
   article: {
     id?: string; url?: string; title: string; description?: string;
-    publisher?: string; imageUrl?: string;
+    publisher?: string; imageUrl?: string; xcancelUrl?: string; content?: string;
   } | null;
   saved?: boolean;
   pinned?: boolean;
@@ -185,7 +185,7 @@ function ProfileAvatar({ post }: { post: RadarPost }) {
 }
 
 function RichAttachments({ post }: { post: RadarPost }) {
-  const articleUrl = safeUrl(post.article?.url);
+  const articleUrl = safeUrl(post.article?.xcancelUrl) ?? safeUrl(post.article?.url);
   return (
     <>
       {post.article && (

@@ -527,6 +527,30 @@ def set_account_disposition(conn: sqlite3.Connection, handle: str, disposition: 
         })
 
 
+def purge_account(conn: sqlite3.Connection, handle: str, *, enqueue_change: bool = True) -> dict[str, Any]:
+    normalized = normalize_handle(handle)
+    post_rows = list(conn.execute("SELECT post_id FROM posts WHERE lower(handle)=?", (normalized,)))
+    post_ids = [str(row["post_id"]) for row in post_rows]
+    observation_rows = list(conn.execute(
+        "SELECT po.id FROM post_observations po JOIN posts p ON p.post_id=po.post_id WHERE lower(p.handle)=?",
+        (normalized,),
+    ))
+    observation_ids = [int(row["id"]) for row in observation_rows]
+    if observation_ids:
+        conn.executemany("DELETE FROM observation_acquisitions WHERE observation_id=?", ((item,) for item in observation_ids))
+    if post_ids:
+        conn.executemany("DELETE FROM posts_fts WHERE post_id=?", ((item,) for item in post_ids))
+    conn.execute("DELETE FROM posts WHERE lower(handle)=?", (normalized,))
+    conn.execute("DELETE FROM account_evidence WHERE lower(handle)=?", (normalized,))
+    conn.execute("DELETE FROM topic_account_memory WHERE lower(handle)=?", (normalized,))
+    conn.execute("DELETE FROM account_reputation WHERE lower(handle)=?", (normalized,))
+    if enqueue_change:
+        enqueue(conn, f"account-purge:{normalized}:{uuid.uuid4()}", "account_purge", {
+            "handle": normalized, "updated_at": utcnow(),
+        })
+    return {"handle": normalized, "posts_purged": len(post_ids), "observations_purged": len(observation_ids)}
+
+
 def set_post_state(conn: sqlite3.Connection, post_id: str, *, saved: bool | None = None,
                    pinned: bool | None = None, dismissed: bool | None = None,
                    enqueue_change: bool = True) -> None:

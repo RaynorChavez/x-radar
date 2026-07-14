@@ -16,6 +16,7 @@ from .db import (
     ingest_capture,
     mark_outbox_failed,
     mark_outbox_sent,
+    purge_account,
     search_posts,
     seed_blocklist,
     set_account_disposition,
@@ -52,6 +53,10 @@ def parser() -> argparse.ArgumentParser:
     account.add_argument("handle")
     account.add_argument("disposition", choices=["allow", "normal", "watch", "downrank", "blocked"])
     account.add_argument("--notes")
+
+    purge = commands.add_parser("purge-account")
+    purge.add_argument("handle")
+    purge.add_argument("--confirm", required=True)
 
     seed = commands.add_parser("seed-blocklist")
     seed.add_argument("input")
@@ -155,6 +160,12 @@ def main(argv: list[str] | None = None) -> int:
         set_account_disposition(conn, args.handle, args.disposition, args.notes)
         conn.commit()
         print(f"{args.handle} set to {args.disposition}")
+    elif args.command == "purge-account":
+        if args.confirm.strip().lower().lstrip("@") != args.handle.strip().lower().lstrip("@"):
+            raise SystemExit("--confirm must match the account handle")
+        result = purge_account(conn, args.handle)
+        conn.commit()
+        print(json.dumps(result, sort_keys=True))
     elif args.command == "seed-blocklist":
         seed_blocklist(conn, json.loads(Path(args.input).read_text()))
         conn.commit()

@@ -72,6 +72,8 @@ def send_event(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         return _request("POST", "/api/collector/ingest", payload)
     if kind == "account":
         return _request("PUT", f"/api/accounts/{payload['handle'].lstrip('@')}", payload)
+    if kind == "account_purge":
+        return _request("DELETE", f"/api/accounts/{payload['handle'].lstrip('@')}", payload)
     if kind == "post_state":
         return _request("PUT", f"/api/posts/{payload['post_id']}/state", payload)
     raise ValueError(f"unknown outbox event kind: {kind}")

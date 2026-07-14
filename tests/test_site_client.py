@@ -52,3 +52,12 @@ class SiteClientTests(unittest.TestCase):
             site_client.pending_requests()
 
         self.assertEqual("Bearer test-bypass", dict(captured[0].header_items())["Oai-sites-authorization"])
+
+    def test_account_purge_uses_authenticated_delete(self):
+        captured = []
+        with patch.dict(os.environ, {"XRADAR_SITE_URL": "https://private.example", "XRADAR_INGEST_TOKEN": "secret"}, clear=True), \
+             patch.object(site_client, "load_runtime_env"), \
+             patch.object(site_client.urllib.request, "urlopen", side_effect=lambda request, **_: captured.append(request) or _Response()):
+            site_client.send_event("account_purge", {"handle": "@alice"})
+        self.assertEqual("DELETE", captured[0].method)
+        self.assertTrue(captured[0].full_url.endswith("/api/accounts/alice"))

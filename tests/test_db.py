@@ -10,6 +10,7 @@ from xradar.db import (
     connect,
     export_feed,
     ingest_capture,
+    purge_account,
     search_posts,
     seed_blocklist,
     set_account_disposition,
@@ -144,6 +145,26 @@ class DatabaseTests(unittest.TestCase):
             },
         )
         self.assertEqual([], export_feed(self.conn, 10))
+
+    def test_purge_account_removes_posts_observations_memory_and_queues_sync(self):
+        apply_preferences(self.conn, instructions="", topics=["ai"], version=1)
+        key = topic_key("ai")
+        ingest_capture(self.conn, {
+            "scan_id": "purge-scan", "captured_at": "2026-07-14T00:00:00Z", "host": "test",
+            "posts": [{"post_id": "purge-me", "url": "https://x.com/alice/status/purge-me", "handle": "alice", "text": "article"}],
+        })
+        self.conn.execute(
+            "INSERT INTO topic_account_memory(topic_key,handle,last_observed_at) VALUES(?,?,?)",
+            (key, "@alice", "2026-07-14T00:00:00Z"),
+        )
+        before = self.conn.execute("SELECT count(*) FROM sync_outbox").fetchone()[0]
+        result = purge_account(self.conn, "Alice")
+        self.assertEqual(1, result["posts_purged"])
+        self.assertEqual(1, result["observations_purged"])
+        self.assertEqual(0, self.conn.execute("SELECT count(*) FROM posts WHERE handle='@alice'").fetchone()[0])
+        self.assertEqual(0, self.conn.execute("SELECT count(*) FROM post_observations").fetchone()[0])
+        self.assertEqual(0, self.conn.execute("SELECT count(*) FROM topic_account_memory WHERE handle='@alice'").fetchone()[0])
+        self.assertEqual(before + 1, self.conn.execute("SELECT count(*) FROM sync_outbox").fetchone()[0])
 
     def test_capture_records_posts_and_account_signals(self):
         result = ingest_capture(

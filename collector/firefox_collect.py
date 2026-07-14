@@ -35,7 +35,7 @@ const canonical = `https://x.com/${rawHandle}/status/${postId}`;
 const userLines = text('[data-testid="User-Name"]').split("\n").map((s) => s.trim()).filter(Boolean);
 const author = userLines.find((line) => !line.startsWith("@") && !/^·$/.test(line)) || rawHandle;
 const avatar = root.querySelector('[data-testid="Tweet-User-Avatar"] img')?.src || null;
-const body = text('[data-testid="tweetText"]');
+const tweetBody = text('[data-testid="tweetText"]');
 const fullText = root.innerText || "";
 
 const numberFrom = (value) => {
@@ -87,14 +87,28 @@ for (const anchor of root.querySelectorAll("a[href]")) {
   });
 }
 
-const articleAnchor = [...root.querySelectorAll('a[href*="/i/article/"]')][0];
-const articleMatch = articleAnchor?.href?.match(/\/i\/article\/(\d+)/);
-const article = articleMatch ? {
-  id: articleMatch[1], url: articleAnchor.href,
-  title: articleAnchor.innerText?.trim() || body.slice(0, 160) || "X Article",
-  description: null, publisher: author,
-  imageUrl: root.querySelector('[data-testid="card.layoutLarge.media"] img, [data-testid="card.layoutSmall.media"] img')?.src || null,
+const legacyArticleAnchor = [...root.querySelectorAll('a[href*="/i/article/"]')][0];
+const legacyArticleMatch = legacyArticleAnchor?.href?.match(/\/i\/article\/(\d+)/);
+const articleView = root.querySelector('[data-testid="twitterArticleReadView"]');
+const articleId = legacyArticleMatch?.[1] || (articleView ? postId : null);
+const articleTitle = text('[data-testid="twitter-article-title"]')
+  || legacyArticleAnchor?.innerText?.trim() || "X Article";
+const articleContent = text('[data-testid="twitterArticleRichTextView"]')
+  || text('[data-testid="longformRichTextComponent"]');
+const articleExcerpt = articleContent.slice(0, 1200);
+const articleUrl = legacyArticleAnchor?.href || (articleId ? `https://x.com/${rawHandle}/article/${articleId}` : null);
+const articleXcancelUrl = legacyArticleMatch
+  ? `https://xcancel.com/i/article/${legacyArticleMatch[1]}`
+  : `https://xcancel.com/${rawHandle}/status/${postId}`;
+const article = articleId ? {
+  id: articleId, url: articleUrl, xcancelUrl: articleXcancelUrl,
+  title: articleTitle,
+  description: articleExcerpt.slice(0, 500) || null,
+  content: articleContent.slice(0, 12000) || null,
+  publisher: author,
+  imageUrl: root.querySelector('[data-testid="twitterArticleReadView"] [data-testid="tweetPhoto"] img, [data-testid="card.layoutLarge.media"] img, [data-testid="card.layoutSmall.media"] img')?.src || null,
 } : null;
+const body = tweetBody || (article ? [articleTitle, articleExcerpt].filter(Boolean).join("\n\n") : "");
 
 const quotedStatus = statusLinks.find((href) => {
   const found = href.match(/\/status\/(\d+)/);
@@ -108,7 +122,7 @@ return {
   is_ad: /(^|\n)(Ad|Promoted)(\n|$)/i.test(fullText),
   is_reply: /Replying to\s+@/i.test(fullText), is_quote: Boolean(quotedStatus),
   source_url: externalLinks[0]?.url || null,
-  xcancel_url: articleMatch ? `https://xcancel.com/i/article/${articleMatch[1]}` : `https://xcancel.com/${rawHandle}/status/${postId}`,
+  xcancel_url: article?.xcancelUrl || `https://xcancel.com/${rawHandle}/status/${postId}`,
   external_links: externalLinks, media, article,
   engagement: {
     replies: metric("reply", "repl"), reposts: metric("retweet", "repost"),

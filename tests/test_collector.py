@@ -4,7 +4,7 @@ import time
 import unittest
 from pathlib import Path
 
-from collector.firefox_collect import collect_target, legacy_kind, load_plan, validate_target
+from collector.firefox_collect import EXTRACT_POST, collect_target, legacy_kind, load_plan, validate_target
 
 
 class FakeDriver:
@@ -64,6 +64,13 @@ class CollectorContractTests(unittest.TestCase):
     def test_account_root_remains_a_focused_account_source(self):
         self.assertEqual("account", legacy_kind("https://x.com/researcher"))
         self.assertEqual("home", legacy_kind("https://x.com/home"))
+
+    def test_supports_x_longform_article_markup(self):
+        self.assertIn('twitterArticleReadView', EXTRACT_POST)
+        self.assertIn('twitter-article-title', EXTRACT_POST)
+        self.assertIn('twitterArticleRichTextView', EXTRACT_POST)
+        self.assertIn('/article/${articleId}', EXTRACT_POST)
+        self.assertIn('content: articleContent.slice(0, 12000)', EXTRACT_POST)
 
     def test_global_post_id_dedup_preserves_both_discovery_sources(self):
         shared = {"post_id": "1", "url": "https://x.com/a/status/1", "handle": "@a", "text": "result"}
