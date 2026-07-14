@@ -3,9 +3,10 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from collector.firefox_collect import (
-    EXTRACT_POST, collect_target, legacy_kind, load_plan, validate_post_detail_target, validate_target,
+    EXTRACT_POST, collect_target, legacy_kind, load_plan, parse_args, validate_post_detail_target, validate_target,
 )
 
 
@@ -41,6 +42,15 @@ class DelayedTimelineDriver(FakeDriver):
 
 
 class CollectorContractTests(unittest.TestCase):
+    def test_browser_binary_paths_can_be_configured_for_a_service_user(self):
+        with patch.dict(
+            "os.environ",
+            {"XRADAR_GECKODRIVER": "/opt/x-radar/geckodriver", "XRADAR_FIREFOX": "/opt/firefox"},
+        ), patch("sys.argv", ["firefox_collect.py", "--output", "capture.json"]):
+            arguments = parse_args()
+        self.assertEqual("/opt/x-radar/geckodriver", arguments.geckodriver)
+        self.assertEqual("/opt/firefox", arguments.firefox)
+
     def test_loads_valid_mixed_plan_and_rejects_wrong_budget(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "plan.json"

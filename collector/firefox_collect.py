@@ -141,8 +141,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plan", help="Version 2 multi-source collection plan")
     parser.add_argument("--output", required=True)
     parser.add_argument("--profile", default="var/firefox-profile")
-    parser.add_argument("--geckodriver", default=str(Path.home() / ".local/bin/geckodriver"))
-    parser.add_argument("--firefox", default="/usr/bin/firefox")
+    parser.add_argument(
+        "--geckodriver",
+        default=os.environ.get("XRADAR_GECKODRIVER", str(Path.home() / ".local/bin/geckodriver")),
+    )
+    parser.add_argument("--firefox", default=os.environ.get("XRADAR_FIREFOX", "/usr/bin/firefox"))
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--max-scrolls", type=int, default=30)
     parser.add_argument("--max-minutes", type=int, default=25)
