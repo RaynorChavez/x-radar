@@ -239,7 +239,14 @@ function RichAttachments({ post }: { post: RadarPost }) {
   const articleMirror = articleId ? `https://xcancel.com/i/article/${articleId}` : null;
   const articleUrl = safeUrl(articleMirror) ?? safeUrl(post.article?.xcancelUrl) ?? safeUrl(post.article?.url);
   const articleContent = post.article?.content?.trim();
-  const articleParagraphs = articleContent?.split(/\n{2,}/).map((value) => value.trim()).filter(Boolean) ?? [];
+  const articleBlocks = articleContent?.split(/\n+/).map((value) => value.trim()).filter(Boolean)
+    .filter((value, index) => index > 0 || value.toLocaleLowerCase() !== post.article?.title?.trim().toLocaleLowerCase())
+    .map((value) => ({
+      value,
+      kind: value.length <= 88 && value.split(/\s+/).length <= 12 && !/[.!?]$/.test(value)
+        ? "heading" as const
+        : "paragraph" as const,
+    })) ?? [];
   return (
     <>
       {post.article && (
@@ -260,8 +267,15 @@ function RichAttachments({ post }: { post: RadarPost }) {
             <small>{articleContent.length.toLocaleString()} characters</small>
           </summary>
           <div>
-            <h3>{post.article?.title}</h3>
-            {articleParagraphs.map((paragraph, index) => <p key={`${post.postId}-article-${index}`}>{paragraph}</p>)}
+            <header>
+              <small>{post.article?.publisher ?? post.author ?? "X Article"}</small>
+              <h3>{post.article?.title}</h3>
+            </header>
+            <section>
+              {articleBlocks.map((block, index) => block.kind === "heading"
+                ? <h4 key={`${post.postId}-article-${index}`}>{block.value}</h4>
+                : <p key={`${post.postId}-article-${index}`}>{block.value}</p>)}
+            </section>
             {articleUrl && <a href={articleUrl} target="_blank" rel="noreferrer">Open article on XCancel ↗</a>}
           </div>
         </details>

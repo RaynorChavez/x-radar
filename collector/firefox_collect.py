@@ -96,8 +96,13 @@ const articlePreview = root.querySelector('[data-testid="article-cover-image"]')
 const articleId = legacyArticleMatch?.[1] || (articleView ? postId : null);
 const articleTitle = text('[data-testid="twitter-article-title"]')
   || legacyArticleAnchor?.innerText?.trim() || "X Article";
-const articleContent = text('[data-testid="twitterArticleRichTextView"]')
+const rawArticleContent = text('[data-testid="twitterArticleRichTextView"]')
   || text('[data-testid="longformRichTextComponent"]');
+// X's article reader commonly separates semantic blocks with a single newline.
+// Persist those blocks explicitly so downstream readers do not flatten an
+// entire essay into one paragraph.
+const articleContent = rawArticleContent.split(/\n+/)
+  .map((value) => value.trim()).filter(Boolean).join("\n\n");
 const articleExcerpt = articleContent.slice(0, 1200);
 const articleUrl = legacyArticleAnchor?.href || (articleId ? `https://x.com/${rawHandle}/article/${articleId}` : null);
 const articleXcancelUrl = articleId
