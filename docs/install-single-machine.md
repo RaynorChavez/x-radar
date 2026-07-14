@@ -12,7 +12,7 @@ Clone the repository as `~/x-radar` and install Python dependencies:
 cd ~/x-radar
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e '.[collector]'
+pip install -e '.[collector,semantic]'
 cp .env.example .env
 ```
 
@@ -25,6 +25,7 @@ XRADAR_INGEST_TOKEN=replace-with-a-random-secret
 XRADAR_SITE_BYPASS_TOKEN=
 XRADAR_HOST=single-machine
 XRADAR_ACQUISITION_MODE=mixed
+XRADAR_SEMANTIC_LOCAL_MODE=1
 ```
 
 Install Node.js, Firefox, geckodriver, and the Codex CLI, then follow the
@@ -45,6 +46,11 @@ collector, dispatcher, sync, and backup timers used in split mode.
 Open `http://127.0.0.1:8787` on the host. For remote access, put Tailscale Serve
 or another authenticated reverse proxy in front of the loopback listener. Do
 not bind the dashboard directly to a public interface.
+
+Semantic search remains server-side in this mode too. Point
+`XRADAR_EMBEDDING_MODEL_DIR` at a local BGE ONNX model, run
+`bin/embed-pending`, and keep `bin/semantic-server` on loopback. The dashboard
+route may use a loopback upstream rather than Tailscale Funnel.
 
 ## 3. Verify
 

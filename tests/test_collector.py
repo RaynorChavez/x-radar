@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from collector.firefox_collect import (
-    EXTRACT_POST, collect_target, legacy_kind, load_plan, parse_args, validate_post_detail_target, validate_target,
+    EXTRACT_POST, _XCancelArticleParser, collect_target, legacy_kind, load_plan, parse_args,
+    validate_post_detail_target, validate_target, validate_xcancel_article_target,
 )
 
 
@@ -84,6 +85,7 @@ class CollectorContractTests(unittest.TestCase):
         self.assertIn('/article/${articleId}', EXTRACT_POST)
         self.assertIn('content: articleContent.slice(0, 12000)', EXTRACT_POST)
         self.assertIn('article-cover-image', EXTRACT_POST)
+        self.assertIn('`https://xcancel.com/i/article/${articleId}`', EXTRACT_POST)
 
     def test_article_hydration_url_must_match_a_captured_post(self):
         expected = "https://x.com/demishassabis/status/2076957440109625718"
@@ -95,6 +97,28 @@ class CollectorContractTests(unittest.TestCase):
         ):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 validate_post_detail_target(url, "2076957440109625718")
+
+    def test_xcancel_fallback_is_fixed_to_numeric_article_page_and_extracts_only_article_blocks(self):
+        self.assertEqual(
+            "https://xcancel.com/i/article/2076957440109625718",
+            validate_xcancel_article_target("2076957440109625718"),
+        )
+        with self.assertRaises(ValueError):
+            validate_xcancel_article_target("../../settings")
+        parser = _XCancelArticleParser()
+        parser.feed("""
+          <nav><p>untrusted navigation</p></nav>
+          <article class="article-body">
+            <h1>Frontier AI</h1><div class="article-author"><p>ignored metadata</p></div>
+            <p>First substantive paragraph.</p><h2><strong>Framework</strong></h2>
+            <p>Second substantive paragraph.</p>
+          </article><footer><p>untrusted footer</p></footer>
+        """)
+        self.assertEqual("Frontier AI", parser.title)
+        self.assertEqual(
+            ["First substantive paragraph.", "Framework", "Second substantive paragraph."],
+            parser.blocks,
+        )
 
     def test_global_post_id_dedup_preserves_both_discovery_sources(self):
         shared = {"post_id": "1", "url": "https://x.com/a/status/1", "handle": "@a", "text": "result"}

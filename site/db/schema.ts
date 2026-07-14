@@ -23,6 +23,7 @@ export const posts = sqliteTable("posts", {
   score: real("score").notNull().default(0),
   decision: text("decision").notNull().default("candidate"),
   reasonsJson: text("reasons_json").notNull().default("[]"),
+  scoreComponentsJson: text("score_components_json"),
 }, (table) => [
   index("posts_captured_idx").on(table.capturedAt),
   index("posts_decision_idx").on(table.decision),
@@ -37,6 +38,7 @@ export const postObservations = sqliteTable("post_observations", {
   observedIndex: integer("observed_index").notNull().default(0),
   score: real("score").notNull().default(0),
   decision: text("decision").notNull().default("candidate"),
+  scoreComponentsJson: text("score_components_json"),
   isAd: integer("is_ad", { mode: "boolean" }).notNull().default(false),
   isReply: integer("is_reply", { mode: "boolean" }).notNull().default(false),
   isQuote: integer("is_quote", { mode: "boolean" }).notNull().default(false),

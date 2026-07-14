@@ -45,8 +45,10 @@ Never like, repost, reply, follow, bookmark, message, or change account settings
    that exact blocker. Do not attempt to enter credentials.
    Before stopping for that blocker, report `site-progress error --target <url or mixed>
    [--request-id <id>] --error-code AUTH_REQUIRED --error "X login required"`.
-5. Read the raw capture. Conservatively add `score`, `decision`, and `reasons`
-   to every observed post using the protocol's ranking rubric. Preserve all
+5. Read the raw capture. Conservatively add `score_components`, `score`, `decision`, and `reasons`
+   to every observed post using the protocol's ranking rubric. For a long-form
+   item, read and rank the complete `article.content`, not only the compact
+   `text` preview. Preserve all
    extracted fields exactly. Add evidence-backed account signals only for the
    protocol's observable defect classes. Never hard-block an account.
    For every post add `topic_matches`, an array containing only genuinely matched
@@ -56,6 +58,15 @@ Never like, repost, reply, follow, bookmark, message, or change account settings
    in `reasons`, but do not let preferences override factual quality, source
    quality, read-only safety, complete seen-post retention, or the blocklist
    evidence rules. An empty brief means use only the default rubric.
+   Supply all five score component objects and their post-specific rationales,
+   plus an empty or evidence-backed penalties array. Calculate `score` from the
+   fixed weights and penalties; deterministic ingest will validate and recalculate it.
+   Keep the relevance component at least as high as the strongest genuine
+   `topic_matches` confidence; relevance measures topic fit, while novelty,
+   evidence, density, and importance remain independent. Treat an author's own
+   essay or proposal as a primary source for that author's position. Evaluate
+   its empirical and predictive claims separately, and do not treat explicitly
+   hedged forecasts as unsupported certainty merely because they are forecasts.
    Recommend candidate accounts only through these evidence-backed topic matches;
    local deterministic promotion decides whether they become known accounts.
    As soon as the raw capture is valid, report `site-progress ranking --target

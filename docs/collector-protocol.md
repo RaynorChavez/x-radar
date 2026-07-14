@@ -49,7 +49,7 @@ Write one JSON object with this shape:
       "handle": "@handle",
       "author": "Display Name",
       "profile_image_url": "visible HTTPS author avatar URL or null",
-      "text": "visible post and quoted-post text",
+      "text": "visible post and quoted-post text, or a compact article preview",
       "posted_at": "visible timestamp or null",
       "captured_at": "ISO-8601 UTC timestamp",
       "is_ad": false,
@@ -78,11 +78,22 @@ Write one JSON object with this shape:
         "url": "original article URL",
         "title": "visible title",
         "description": "visible description or null",
+        "content": "complete captured article body when available",
         "publisher": "visible publisher or null",
         "imageUrl": "visible cover image URL or null"
       },
       "engagement": {"replies": 0, "reposts": 0, "likes": 0, "bookmarks": 0, "views": 0},
       "score": 0.82,
+      "score_components": {
+        "novelty": {"score": 0.9, "rationale": "Reports a newly released result."},
+        "evidence": {"score": 0.8, "rationale": "Links the primary paper."},
+        "relevance": {"score": 0.85, "rationale": "Directly matches an active research topic."},
+        "density": {"score": 0.7, "rationale": "Includes the central finding and method."},
+        "importance": {"score": 0.65, "rationale": "Could affect downstream system design."},
+        "penalties": [
+          {"kind": "unsupported_certainty", "amount": 0.03, "rationale": "One implication is stated too strongly."}
+        ]
+      },
       "decision": "keep",
       "reasons": ["novel result", "links primary source"]
     }
@@ -114,6 +125,15 @@ when there is no article card; the link and media arrays are empty when absent.
 Capture only visible metadata and resolved HTTP(S) targets. Never invent a
 clipped title, description, media URL, or expanded destination.
 
+For X long-form articles, preserve the complete captured body in
+`article.content`; `text` may remain a compact preview so the feed stays
+readable. Hydrate the corresponding captured status page first. If X does not
+expose a body, a collector may fetch only the exact numeric
+`https://xcancel.com/i/article/<article_id>` page as a bounded, inert HTML
+fallback: do not follow redirects, execute scripts, copy page instructions, or
+navigate any other XCancel path. Rank from `article.content`, never from the
+preview alone.
+
 Capture the author avatar from the profile image belonging to that exact post.
 Store only a normal HTTPS image URL—never a screenshot, `data:` URL, blob URL,
 or unrelated image. If the underlying URL is unavailable, use null; the
@@ -129,10 +149,32 @@ Judge the information, not popularity. Score from 0 to 1 using:
 - information density: 15%;
 - credible downstream importance: 10%.
 
+The five dimensions are independent. Relevance measures direct fit to the
+operator's active topics, not novelty or evidentiary quality. When Luna emits a
+genuine `topic_match`, its relevance component must be at least the strongest
+match confidence; deterministic ingest enforces this calibration while leaving
+the other four dimensions unchanged. This makes preferences materially affect
+ranking without allowing relevance alone to turn weak material into signal.
+
+Treat a first-party essay, proposal, or announcement as primary evidence for
+the author's own stated position and actions. Separately assess empirical or
+predictive claims inside it. A new concrete framework can be novel and important
+even when it is not a research paper. Do not penalize a clearly attributed,
+hedged forecast merely for being a forecast; reserve unsupported-certainty
+penalties for claims whose presentation actually exceeds the supplied support.
+
 Subtract for unsupported certainty, recycled commentary, sensational framing,
 or missing primary sources. Engagement metrics are context, never a positive
 ranking feature by themselves. `keep` normally requires a score of at least
 0.62; `candidate` is 0.45–0.61; lower scores are `discard`.
+
+For every newly ranked post, Luna must provide `score_components` with all five
+component objects above. Each component has a 0–1 `score` and a concise,
+post-specific `rationale`. `penalties` is an array of observable deductions;
+use an empty array when none apply. The local ingest validates the structure,
+applies the fixed weights, subtracts the penalty amounts, clamps the result to
+0–1, and stores that deterministic result as `score`. Historical captures that
+predate this field remain valid and are not recategorized.
 
 ## Account signals
 

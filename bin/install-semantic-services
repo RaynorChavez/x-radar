@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ ! -f "$ROOT/.env" ]] || ! grep -q '^XRADAR_EMBEDDING_MODEL_DIR=.' "$ROOT/.env"; then
+  echo "Set XRADAR_EMBEDDING_MODEL_DIR in $ROOT/.env before enabling semantic search." >&2
+  exit 2
+fi
+UNIT_DIR="$HOME/.config/systemd/user"
+mkdir -p "$UNIT_DIR"
+cp "$ROOT"/deploy/systemd/x-radar-semantic.service \
+  "$ROOT"/deploy/systemd/x-radar-embed.service \
+  "$ROOT"/deploy/systemd/x-radar-embed.timer \
+  "$UNIT_DIR"/
+systemctl --user daemon-reload
+systemctl --user enable --now x-radar-semantic.service x-radar-embed.timer
+systemctl --user start x-radar-embed.service

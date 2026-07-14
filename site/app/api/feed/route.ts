@@ -31,6 +31,7 @@ export async function GET(request: Request) {
           o.observed_index AS observation_index,
           o.score AS observation_score,
           o.decision AS observation_decision,
+          o.score_components_json AS observation_score_components_json,
           o.is_ad AS observation_is_ad,
           o.is_reply AS observation_is_reply,
           o.is_quote AS observation_is_quote
@@ -85,6 +86,7 @@ export async function GET(request: Request) {
       profileImageUrl: row.profile_image_url, text: row.text,
       postedAt: row.posted_at, capturedAt: row.observation_captured_at ?? row.captured_at,
       score: row.observation_score ?? row.score, decision: row.observation_decision ?? row.decision,
+      scoreComponents: parseJson(row.observation_score_components_json ?? row.score_components_json, null),
       isAd: Boolean(row.observation_is_ad ?? row.is_ad),
       isReply: Boolean(row.observation_is_reply ?? row.is_reply),
       isQuote: Boolean(row.observation_is_quote ?? row.is_quote),

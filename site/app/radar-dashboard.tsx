@@ -25,6 +25,8 @@ export type RadarPost = {
   firstSeenAt?: string;
   lastSeenAt?: string;
   score: number;
+  semanticScore?: number;
+  scoreComponents?: ScoreComponents | null;
   decision: "keep" | "candidate" | "discard";
   isAd?: boolean;
   isReply?: boolean;
@@ -47,12 +49,26 @@ export type RadarPost = {
   dismissed?: boolean;
 };
 
+type ScoreComponent = { score: number; weight: number; rationale: string };
+type ScoreComponents = {
+  novelty: ScoreComponent;
+  evidence: ScoreComponent;
+  relevance: ScoreComponent;
+  density: ScoreComponent;
+  importance: ScoreComponent;
+  penalties: Array<{ kind: string; amount: number; rationale: string }>;
+  weighted_total: number;
+  penalty_total: number;
+  final_score: number;
+};
+
 type Stats = { scanned: number; observations?: number; kept: number; candidates: number; discarded: number; authors: number };
 type Reputation = { handle: string; disposition: string; strikePoints: number; confidence: number; notes?: string | null };
 type FetchRequest = { id: string; handle: string; targetKind?: "mixed" | "account"; includeReplies: boolean; status: string; requestedAt: string; preferenceVersion?: number; bootstrapTopics?: string[]; resultCount?: number | null; error?: string | null };
 type Range = "day" | "week" | "month" | "year" | "all";
 type Surface = "briefing" | "signal" | "saved" | "history";
 type SortMode = "signal" | "newest";
+type SearchMode = "lexical" | "semantic";
 type RadarRun = {
   scanId: string; host: string; source: string; target?: string | null; requestId?: string | null;
   capturedAt: string; ingestedAt: string; postsSeen: number; postsKept: number; postsAdded: number;
@@ -171,6 +187,40 @@ function effectiveScore(post: RadarPost) {
   return post.score + adjustment;
 }
 
+const scoreLabels: Array<[keyof Pick<ScoreComponents, "novelty" | "evidence" | "relevance" | "density" | "importance">, string]> = [
+  ["novelty", "Novelty"], ["evidence", "Evidence"], ["relevance", "Relevance"],
+  ["density", "Density"], ["importance", "Importance"],
+];
+
+function ScoreBreakdown({ components }: { components?: ScoreComponents | null }) {
+  if (!components) return null;
+  return (
+    <details className="score-breakdown">
+      <summary>Why this score <span>{components.final_score.toFixed(2)}</span></summary>
+      <div className="score-component-list">
+        {scoreLabels.map(([key, label]) => {
+          const component = components[key];
+          return (
+            <div className="score-component" key={key}>
+              <div><b>{label}</b><span>{Math.round(component.weight * 100)}% · {component.score.toFixed(2)}</span></div>
+              <i><span style={{ width: `${Math.round(component.score * 100)}%` }} /></i>
+              <p>{component.rationale}</p>
+            </div>
+          );
+        })}
+        {components.penalties.length > 0 && (
+          <div className="score-penalties">
+            {components.penalties.map((penalty, index) => (
+              <p key={`${penalty.kind}-${index}`}><b>−{penalty.amount.toFixed(2)} {penalty.kind.replaceAll("_", " ")}</b><span>{penalty.rationale}</span></p>
+            ))}
+          </div>
+        )}
+        <div className="score-equation"><span>Weighted {components.weighted_total.toFixed(2)}</span><span>Penalties −{components.penalty_total.toFixed(2)}</span><b>Final {components.final_score.toFixed(2)}</b></div>
+      </div>
+    </details>
+  );
+}
+
 function ProfileAvatar({ post }: { post: RadarPost }) {
   const [failed, setFailed] = useState(false);
   const image = safeUrl(post.profileImageUrl);
@@ -185,7 +235,11 @@ function ProfileAvatar({ post }: { post: RadarPost }) {
 }
 
 function RichAttachments({ post }: { post: RadarPost }) {
-  const articleUrl = safeUrl(post.article?.xcancelUrl) ?? safeUrl(post.article?.url);
+  const articleId = /^\d+$/.test(post.article?.id ?? "") ? post.article!.id : null;
+  const articleMirror = articleId ? `https://xcancel.com/i/article/${articleId}` : null;
+  const articleUrl = safeUrl(articleMirror) ?? safeUrl(post.article?.xcancelUrl) ?? safeUrl(post.article?.url);
+  const articleContent = post.article?.content?.trim();
+  const articleParagraphs = articleContent?.split(/\n{2,}/).map((value) => value.trim()).filter(Boolean) ?? [];
   return (
     <>
       {post.article && (
@@ -198,6 +252,19 @@ function RichAttachments({ post }: { post: RadarPost }) {
           </span>
           <b aria-hidden="true">↗</b>
         </a>
+      )}
+      {articleContent && (
+        <details className="article-reader">
+          <summary>
+            <span>Read captured article</span>
+            <small>{articleContent.length.toLocaleString()} characters</small>
+          </summary>
+          <div>
+            <h3>{post.article?.title}</h3>
+            {articleParagraphs.map((paragraph, index) => <p key={`${post.postId}-article-${index}`}>{paragraph}</p>)}
+            {articleUrl && <a href={articleUrl} target="_blank" rel="noreferrer">Open article on XCancel ↗</a>}
+          </div>
+        </details>
       )}
       {post.media.length > 0 && (
         <div className={`media-grid media-count-${Math.min(post.media.length, 4)}`}>
@@ -282,7 +349,8 @@ export function RadarDashboard({
   const [loadingMore, setLoadingMore] = useState(false);
   const [query, setQuery] = useState("");
   const [accountFilter, setAccountFilter] = useState("");
-  const [submittedSearch, setSubmittedSearch] = useState<{ query: string; handle: string } | null>(null);
+  const [searchMode, setSearchMode] = useState<SearchMode>("lexical");
+  const [submittedSearch, setSubmittedSearch] = useState<{ query: string; handle: string; mode: SearchMode } | null>(null);
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatus | null>(null);
   const [runs, setRuns] = useState<RadarRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<{ run: RadarRun; acquisitions?: RunAcquisition[]; observations: RadarPost[] } | null>(null);
@@ -299,7 +367,9 @@ export function RadarDashboard({
   useEffect(() => {
     const controller = new AbortController();
     const feedUrl = submittedSearch && surface === "signal"
-      ? `/api/posts/search?${new URLSearchParams({ q: submittedSearch.query, handle: submittedSearch.handle, sort, limit: "100" })}`
+      ? submittedSearch.mode === "semantic"
+        ? `/api/posts/semantic-search?${new URLSearchParams({ q: submittedSearch.query, handle: submittedSearch.handle, decision: decision === "keep" ? "keep" : "", limit: "50" })}`
+        : `/api/posts/search?${new URLSearchParams({ q: submittedSearch.query, handle: submittedSearch.handle, sort, limit: "100" })}`
       : surface === "briefing"
       ? `/api/briefing?${new URLSearchParams({ timezone: dashboardTimeZone, sort })}`
       : surface === "saved"
@@ -360,7 +430,7 @@ export function RadarDashboard({
   async function runSearch(event: FormEvent) {
     event.preventDefault();
     setSurface("signal");
-    setSubmittedSearch({ query: query.trim(), handle: accountFilter.trim() });
+    setSubmittedSearch({ query: query.trim(), handle: accountFilter.trim(), mode: searchMode });
   }
 
   function changeSurface(next: Surface) {
@@ -460,11 +530,12 @@ export function RadarDashboard({
 
   const orderedPosts = useMemo(() => [...posts].sort((a, b) => {
     if (surface === "history") return Date.parse(b.capturedAt) - Date.parse(a.capturedAt);
+    if (submittedSearch?.mode === "semantic") return (b.semanticScore ?? -1) - (a.semanticScore ?? -1);
     if (sort === "signal") return effectiveScore(b) - effectiveScore(a);
     const bDate = resolvePublishedAt(b.postedAt, b.capturedAt)?.getTime() ?? Date.parse(b.capturedAt);
     const aDate = resolvePublishedAt(a.postedAt, a.capturedAt)?.getTime() ?? Date.parse(a.capturedAt);
     return bDate - aDate;
-  }), [posts, sort, surface]);
+  }), [posts, sort, submittedSearch, surface]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, RadarPost[]>();
@@ -473,7 +544,7 @@ export function RadarDashboard({
       const key = surface === "history"
         ? `Scan · ${formatDateTime(new Date(post.capturedAt), true)}`
         : surface === "signal" && sort === "signal"
-          ? submittedSearch ? "Search results · strongest first" : "Ranked signal · strongest first"
+          ? submittedSearch?.mode === "semantic" ? "Semantic matches" : submittedSearch ? "Search results · strongest first" : "Ranked signal · strongest first"
         : published.toLocaleDateString("en-AU", {
           timeZone: dashboardTimeZone, weekday: "long", day: "numeric", month: "long", year: "numeric",
         });
@@ -587,6 +658,9 @@ export function RadarDashboard({
           <form className={`search-deck ${searchOpen ? "mobile-open" : ""}`} onSubmit={runSearch}>
             <input aria-label="Search post text" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search posts, authors, research…" />
             <input aria-label="Filter by account" value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)} placeholder="@account" />
+            <select aria-label="Search mode" value={searchMode} onChange={(event) => setSearchMode(event.target.value as SearchMode)}>
+              <option value="lexical">Exact words</option><option value="semantic">Meaning</option>
+            </select>
             <button>Search archive →</button>
             <button type="button" className="clear-search" disabled={!submittedSearch} onClick={() => { setSubmittedSearch(null); setQuery(""); setAccountFilter(""); }}>Reset</button>
           </form>
@@ -636,6 +710,7 @@ export function RadarDashboard({
                         {surface === "history" && post.isAd && <span className="observation-badge">promoted</span>}
                         {surface === "history" && post.isReply && <span className="observation-badge">reply</span>}
                         {surface === "history" && post.isQuote && <span className="observation-badge">quote</span>}
+                        {submittedSearch?.mode === "semantic" && post.semanticScore !== undefined && <><span>match</span><b>{post.semanticScore.toFixed(2)}</b></>}
                         <span>signal</span><b>{post.score.toFixed(2)}</b>
                       </div>
                     </div>
@@ -644,6 +719,7 @@ export function RadarDashboard({
                     <div className="reason-row">
                       {post.reasons.slice(0, 3).map((reason) => <span key={reason}>{reason}</span>)}
                     </div>
+                    <ScoreBreakdown components={post.scoreComponents} />
                     <div className="feedback-row" aria-label="Post actions">
                       <button className={post.saved ? "active" : ""} onClick={() => updatePostState(post, { saved: !post.saved })}>{post.saved ? "Saved" : "Save"}</button>
                       <button className={post.pinned ? "active" : ""} onClick={() => updatePostState(post, { pinned: !post.pinned })}>{post.pinned ? "Pinned" : "Pin"}</button>

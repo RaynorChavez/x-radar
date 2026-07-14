@@ -43,4 +43,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now x-radar-dashboard.service
 
 "$ROOT/bin/install-user-services"
+if [[ -n "${XRADAR_EMBEDDING_MODEL_DIR:-}" ]]; then
+  "$ROOT/bin/install-semantic-services"
+fi
 echo "X Radar is running locally at http://127.0.0.1:8787"

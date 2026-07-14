@@ -15,6 +15,7 @@ export async function GET(_request: Request, context: { params: Promise<{ scanId
     const observations = await db.prepare(`SELECT p.*,COALESCE(a.disposition,'normal') account_disposition,
       s.saved_at,s.pinned_at,s.dismissed_at,o.captured_at observation_captured_at,
       o.observed_index,o.score observation_score,o.decision observation_decision,
+      o.score_components_json observation_score_components_json,
       o.is_ad observation_is_ad,o.is_reply observation_is_reply,o.is_quote observation_is_quote
       FROM post_observations o JOIN posts p ON p.post_id=o.post_id
       LEFT JOIN account_reputation a ON a.handle=p.handle LEFT JOIN user_post_state s ON s.post_id=p.post_id

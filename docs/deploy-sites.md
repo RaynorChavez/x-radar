@@ -24,6 +24,9 @@ Then ask Codex to deploy the existing `site/` project privately with:
 
 - a D1 binding named `DB`;
 - `XRADAR_INGEST_TOKEN` set to the same secret used by the collector; and
+- `XRADAR_SEMANTIC_UPSTREAM_URL` set to the path-scoped HTTPS Funnel URL;
+- `XRADAR_SEMANTIC_HMAC_ACTIVE_KEY_ID` and `XRADAR_SEMANTIC_HMAC_KEYS` set to
+  the server-only semantic gateway key; and
 - owner-only access, unless you intentionally choose a broader policy.
 
 After deployment, ask Codex to generate the private Sites bypass token used by

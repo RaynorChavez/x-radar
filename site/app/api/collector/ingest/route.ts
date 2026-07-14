@@ -30,6 +30,7 @@ type CapturePost = {
   xcancel_url?: string; external_links?: Array<Record<string, unknown>>; media?: Array<Record<string, unknown>>;
   article?: { id?: string; url?: string; title?: string; [key: string]: unknown } | null;
   topic_matches?: Array<{ topic_key: string; topic?: string; confidence: number }>;
+  score_components?: Record<string, unknown> | null;
   discovery_sources?: Array<{ acquisition_id?: string; id?: string; kind?: string }>;
 };
 
@@ -40,8 +41,8 @@ type Acquisition = {
 };
 
 function xcancelFor(post: CapturePost) {
-  if (post.xcancel_url) return post.xcancel_url;
   if (post.article?.id) return `https://xcancel.com/i/article/${post.article.id}`;
+  if (post.xcancel_url) return post.xcancel_url;
   return `https://xcancel.com/${post.handle.replace(/^@/, "").toLowerCase()}/status/${post.post_id}`;
 }
 
@@ -83,13 +84,15 @@ async function ingest(request: Request) {
       first_seen_at, last_seen_at, is_ad, is_reply, is_quote,
       source_url, xcancel_url, external_links_json, media_json, article_json,
       engagement_json, score, decision, reasons_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      , score_components_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(post_id) DO UPDATE SET
       text=excluded.text, profile_image_url=COALESCE(excluded.profile_image_url, posts.profile_image_url),
       xcancel_url=excluded.xcancel_url,
       external_links_json=excluded.external_links_json, media_json=excluded.media_json,
       article_json=excluded.article_json, engagement_json=excluded.engagement_json,
       score=excluded.score, decision=excluded.decision, reasons_json=excluded.reasons_json,
+      score_components_json=COALESCE(excluded.score_components_json, posts.score_components_json),
       captured_at=excluded.captured_at, last_seen_at=excluded.last_seen_at
   `).bind(
     post.post_id, post.url, post.handle.toLowerCase(), post.author ?? null,
@@ -100,12 +103,14 @@ async function ingest(request: Request) {
     JSON.stringify(post.external_links ?? []), JSON.stringify(post.media ?? []),
     post.article ? JSON.stringify(post.article) : null, JSON.stringify(post.engagement ?? {}),
     post.score ?? 0, post.decision ?? "candidate", JSON.stringify(post.reasons ?? []),
+    post.score_components ? JSON.stringify(post.score_components) : null,
   )));
   if (posts.length) await batchInChunks(db, posts.map((post, observedIndex) => db.prepare(`
     INSERT INTO post_observations (
       id, scan_id, post_id, captured_at, observed_index, score, decision, is_ad, is_reply, is_quote,
       preference_version,topic_matches_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ,score_components_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       observed_index=excluded.observed_index,
       score=excluded.score,
@@ -113,12 +118,14 @@ async function ingest(request: Request) {
       is_ad=excluded.is_ad,
       is_reply=excluded.is_reply,
       is_quote=excluded.is_quote,preference_version=excluded.preference_version,
-      topic_matches_json=excluded.topic_matches_json
+      topic_matches_json=excluded.topic_matches_json,
+      score_components_json=excluded.score_components_json
   `).bind(
     `${scanId}:${post.post_id}`, scanId, post.post_id, post.captured_at ?? capturedAt, observedIndex,
     post.score ?? 0, post.decision ?? "candidate", post.is_ad ? 1 : 0,
     post.is_reply ? 1 : 0, post.is_quote ? 1 : 0,
     payload.preference_version ?? 0, JSON.stringify(post.topic_matches ?? []),
+    post.score_components ? JSON.stringify(post.score_components) : null,
   )));
   const acquisitions = payload.acquisitions ?? [];
   if (acquisitions.length) await batchInChunks(db, acquisitions.map((item) => db.prepare(`

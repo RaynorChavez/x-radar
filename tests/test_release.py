@@ -36,6 +36,8 @@ class ReleaseArtifactTests(unittest.TestCase):
                 names = archive.getnames()
                 self.assertIn("release.json", names)
                 self.assertIn("collector/firefox_collect.py", names)
+                self.assertIn("bin/semantic-server", names)
+                self.assertIn("src/xradar/semantic.py", names)
                 self.assertFalse(any(name.startswith("site/") for name in names))
                 self.assertFalse(any(name.startswith("var/") for name in names))
                 embedded = json.load(archive.extractfile("release.json"))
