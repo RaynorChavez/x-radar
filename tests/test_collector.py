@@ -84,6 +84,7 @@ class CollectorContractTests(unittest.TestCase):
         self.assertIn('twitterArticleRichTextView', EXTRACT_POST)
         self.assertIn('/article/${articleId}', EXTRACT_POST)
         self.assertIn('content: articleContent.slice(0, 12000)', EXTRACT_POST)
+        self.assertIn('.filter(Boolean).join("\\n\\n")', EXTRACT_POST)
         self.assertIn('article-cover-image', EXTRACT_POST)
         self.assertIn('`https://xcancel.com/i/article/${articleId}`', EXTRACT_POST)
 
