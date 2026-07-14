@@ -1,0 +1,16 @@
+[Unit]
+Description=x-radar hourly collection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/x-radar
+ExecStart=%h/x-radar/bin/collect-once
+EnvironmentFile=%h/x-radar/.env
+Environment=HOME=%h
+Environment=XRADAR_HOST=pi
+Nice=10
+
+# The browser profile and capture ledger are intentionally persistent.
+ReadWritePaths=%h/x-radar/var %h/x-radar/public

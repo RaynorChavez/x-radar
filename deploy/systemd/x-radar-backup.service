@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up x-radar local database
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/x-radar
+ExecStart=%h/x-radar/bin/backup
+Environment=HOME=%h

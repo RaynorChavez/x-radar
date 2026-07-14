@@ -1,0 +1,11 @@
+[Unit]
+Description=x-radar dashboard synchronization
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/x-radar
+ExecStart=%h/x-radar/bin/sync
+EnvironmentFile=%h/x-radar/.env
+Environment=HOME=%h

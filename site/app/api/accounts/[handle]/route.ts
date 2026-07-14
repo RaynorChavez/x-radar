@@ -1,0 +1,25 @@
+import { ensureRadarDb } from "../../../../lib/d1";
+
+const allowed = new Set(["allow", "normal", "watch", "downrank", "blocked"]);
+
+export async function PUT(request: Request, context: { params: Promise<{ handle: string }> }) {
+  try {
+    const params = await context.params;
+    const handle = `@${params.handle.replace(/^@/, "").toLowerCase()}`;
+    const body = await request.json() as { disposition?: string; notes?: string | null; updated_at?: string };
+    if (!body.disposition || !allowed.has(body.disposition)) return Response.json({ error: "Invalid disposition" }, { status: 400 });
+    const db = await ensureRadarDb();
+    const now = body.updated_at ?? new Date().toISOString();
+    const payload = { kind: "account", handle, disposition: body.disposition, notes: body.notes ?? null, updated_at: now };
+    await db.batch([
+      db.prepare(`INSERT INTO account_reputation(handle,disposition,strike_points,confidence,reasons_json,notes,operator_override,updated_at)
+        VALUES(?,?,0,0,'[]',?,1,?) ON CONFLICT(handle) DO UPDATE SET disposition=excluded.disposition,
+        notes=excluded.notes,operator_override=1,updated_at=excluded.updated_at`).bind(handle, body.disposition, body.notes ?? null, now),
+      db.prepare("INSERT INTO mutations(kind,entity_id,payload_json,created_at) VALUES('account',?,?,?)")
+        .bind(handle, JSON.stringify(payload), now),
+    ]);
+    return Response.json({ account: payload });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "Account update failed" }, { status: 500 });
+  }
+}

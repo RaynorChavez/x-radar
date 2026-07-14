@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+UNIT_DIR="$HOME/.config/systemd/user"
+mkdir -p "$UNIT_DIR"
+cp "$ROOT"/deploy/systemd/x-radar.service "$ROOT"/deploy/systemd/x-radar.timer \
+  "$ROOT"/deploy/systemd/x-radar-dispatch.service "$ROOT"/deploy/systemd/x-radar-dispatch.timer \
+  "$ROOT"/deploy/systemd/x-radar-sync.service "$ROOT"/deploy/systemd/x-radar-sync.timer \
+  "$ROOT"/deploy/systemd/x-radar-backup.service "$ROOT"/deploy/systemd/x-radar-backup.timer \
+  "$UNIT_DIR"/
+systemctl --user daemon-reload
+systemctl --user enable --now x-radar.timer x-radar-dispatch.timer x-radar-sync.timer x-radar-backup.timer

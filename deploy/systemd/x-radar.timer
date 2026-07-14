@@ -1,0 +1,12 @@
+[Unit]
+Description=Run x-radar hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=8m
+AccuracySec=1m
+Unit=x-radar.service
+
+[Install]
+WantedBy=timers.target

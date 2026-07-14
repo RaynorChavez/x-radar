@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PYTHONPATH=src python3 -m xradar --db var/x-radar.sqlite pull-site-mutations || true
+PYTHONPATH=src python3 -m xradar --db var/x-radar.sqlite sync

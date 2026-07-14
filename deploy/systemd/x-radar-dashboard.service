@@ -1,0 +1,15 @@
+[Unit]
+Description=x-radar local dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/x-radar/site
+ExecStart=/usr/bin/env npm exec -- wrangler dev --config dist/server/wrangler.json --persist-to %h/x-radar/var/single-machine --ip 127.0.0.1 --port 8787 --show-interactive-dev-session false --env-file %h/x-radar/.env
+Environment=HOME=%h
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

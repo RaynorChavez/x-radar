@@ -1,0 +1,14 @@
+[
+  {
+    "handle": "@example_account",
+    "disposition": "watch",
+    "notes": "Synthetic example: review after more evidence.",
+    "evidence": [
+      {
+        "url": "https://x.com/example_account/status/1234567890",
+        "reason": "engagement_bait_non_additive_quote_wrapper",
+        "confidence": 0.75
+      }
+    ]
+  }
+]

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPECTED="$HOME/x-radar"
+if [[ "$ROOT" != "$EXPECTED" ]]; then
+  echo "Single-machine service install expects the repository at $EXPECTED" >&2
+  exit 2
+fi
+if [[ ! -f "$ROOT/.env" ]]; then
+  echo "Create $ROOT/.env from .env.example before installing." >&2
+  exit 2
+fi
+
+set -a
+# shellcheck disable=SC1091
+. "$ROOT/.env"
+set +a
+if [[ "${XRADAR_MODE:-}" != "single" ]]; then
+  echo "Set XRADAR_MODE=single in .env before installing." >&2
+  exit 2
+fi
+if [[ "${XRADAR_SITE_URL:-}" != "http://127.0.0.1:8787" ]]; then
+  echo "Single-machine mode requires XRADAR_SITE_URL=http://127.0.0.1:8787" >&2
+  exit 2
+fi
+if [[ -z "${XRADAR_INGEST_TOKEN:-}" ]]; then
+  echo "XRADAR_INGEST_TOKEN must be set." >&2
+  exit 2
+fi
+
+cd "$ROOT/site"
+if [[ ! -f .openai/hosting.json ]]; then
+  cp .openai/hosting.example.json .openai/hosting.json
+fi
+npm ci
+npm run build
+
+UNIT_DIR="$HOME/.config/systemd/user"
+mkdir -p "$UNIT_DIR"
+cp "$ROOT/deploy/systemd/x-radar-dashboard.service" "$UNIT_DIR/"
+systemctl --user daemon-reload
+systemctl --user enable --now x-radar-dashboard.service
+
+"$ROOT/bin/install-user-services"
+echo "X Radar is running locally at http://127.0.0.1:8787"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry x-radar dashboard synchronization
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=10m
+Persistent=true
+RandomizedDelaySec=45s
+
+[Install]
+WantedBy=timers.target

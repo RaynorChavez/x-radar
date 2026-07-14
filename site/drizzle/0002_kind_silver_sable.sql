@@ -1,0 +1,1 @@
+ALTER TABLE `posts` ADD `profile_image_url` text;

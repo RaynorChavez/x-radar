@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+failures=0
+
+check_command() {
+  if command -v "$1" >/dev/null 2>&1; then
+    printf 'ok   %s\n' "$1"
+  else
+    printf 'miss %s\n' "$1"
+    failures=$((failures + 1))
+  fi
+}
+
+for command in python3 node npm firefox geckodriver codex flock timeout; do
+  check_command "$command"
+done
+
+if [[ -f "$ROOT/.env" ]]; then
+  printf 'ok   .env\n'
+else
+  printf 'miss .env (copy .env.example and configure it)\n'
+  failures=$((failures + 1))
+fi
+if [[ -f "$ROOT/var/firefox-profile/cookies.sqlite" ]]; then
+  printf 'ok   persistent Firefox profile\n'
+else
+  printf 'miss var/firefox-profile/cookies.sqlite\n'
+  failures=$((failures + 1))
+fi
+
+if (( failures > 0 )); then
+  printf '%s\n' "$failures prerequisite check(s) failed."
+  exit 1
+fi
+printf '%s\n' "X Radar prerequisites look ready."

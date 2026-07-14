@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+requests="$(PYTHONPATH=src python3 -m xradar --db var/x-radar.sqlite site-requests)"
+if printf '%s' "$requests" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("requests") else 1)'; then
+  systemctl --user start --no-block x-radar.service
+fi

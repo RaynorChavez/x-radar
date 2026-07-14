@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+mkdir -p var/inbox public var/log
+
+exec /usr/bin/flock -n var/collector.lock \
+  /usr/bin/timeout 45m "$HOME/.local/bin/codex" exec \
+  -m gpt-5.6-luna \
+  -c model_reasoning_effort='xhigh' \
+  --dangerously-bypass-approvals-and-sandbox \
+  -C "$ROOT" \
+  "$(cat docs/pi-automation-prompt.md)"
