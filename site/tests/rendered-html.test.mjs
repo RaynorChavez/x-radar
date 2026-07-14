@@ -38,6 +38,9 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(dashboard, /article\?\.xcancelUrl/);
   assert.match(dashboard, /article-reader/);
   assert.match(dashboard, /Read captured article/);
+  assert.match(dashboard, /ExpandablePostText/);
+  assert.match(dashboard, /See full post/);
+  assert.match(dashboard, /Show less/);
   assert.match(dashboard, /articleBlocks/);
   assert.match(dashboard, /block\.kind === "heading"/);
   assert.match(dashboard, /xcancel\.com\/i\/article/);
