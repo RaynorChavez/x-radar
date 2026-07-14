@@ -23,15 +23,13 @@ installation channels. Run `bin/doctor` before installing services.
 
 ## 2. Authenticate X manually
 
-Create `var/firefox-profile`, launch Firefox with that profile, and sign in to X
-yourself. Never transfer the profile to a public or shared location. A successful
-profile contains `var/firefox-profile/cookies.sqlite`.
+Follow the [manual X authentication guide](authenticate-x.md). Never transfer
+the resulting profile to a public or shared location.
 
 ## 3. Configure the dashboard
 
-Create a private Sites project from `site/`, retain the D1 binding name `DB`,
-and configure the same `XRADAR_INGEST_TOKEN` in its runtime. Generate a private
-Sites bypass token for the collector.
+Follow the [private Sites deployment guide](deploy-sites.md), retain the D1
+binding name `DB`, and configure the same `XRADAR_INGEST_TOKEN` in both places.
 
 ## 4. Enable collection
 

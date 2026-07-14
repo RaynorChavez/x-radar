@@ -26,8 +26,8 @@ XRADAR_SITE_BYPASS_TOKEN=
 XRADAR_HOST=single-machine
 ```
 
-Install Node.js, Firefox, geckodriver, and the Codex CLI, then authenticate the
-persistent Firefox profile manually as described in the Pi guide.
+Install Node.js, Firefox, geckodriver, and the Codex CLI, then follow the
+[manual X authentication guide](authenticate-x.md).
 
 ## 2. Install services
 

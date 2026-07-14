@@ -1,5 +1,7 @@
 # X Radar
 
+<img src="site/public/x-radar-mark.png" width="88" alt="X Radar signal mark">
+
 X Radar turns an endless X timeline into a finite briefing and a searchable,
 private archive. An always-on collector reads visible posts, retains every
 observation locally, uses Codex/Luna to rank signal, and synchronizes a reading
@@ -36,6 +38,7 @@ See [the architecture](docs/architecture.md).
 
 - [Raspberry Pi/Linux collector + private Sites dashboard](docs/install-pi.md)
 - [One Linux machine for collector, database, API, and dashboard](docs/install-single-machine.md)
+- [Deploying the private Sites dashboard](docs/deploy-sites.md)
 
 Both modes begin with:
 
@@ -46,8 +49,9 @@ pip install -e '.[collector]'
 cp .env.example .env
 ```
 
-Review [configuration](docs/configuration.md), authenticate an isolated Firefox
-profile manually, and run `bin/doctor` before enabling services.
+Review [configuration](docs/configuration.md), [authenticate an isolated Firefox
+profile manually](docs/authenticate-x.md), and run `bin/doctor` before enabling
+services.
 
 ## Repository and data boundaries
 
