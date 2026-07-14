@@ -4,7 +4,9 @@ import time
 import unittest
 from pathlib import Path
 
-from collector.firefox_collect import EXTRACT_POST, collect_target, legacy_kind, load_plan, validate_target
+from collector.firefox_collect import (
+    EXTRACT_POST, collect_target, legacy_kind, load_plan, validate_post_detail_target, validate_target,
+)
 
 
 class FakeDriver:
@@ -71,6 +73,18 @@ class CollectorContractTests(unittest.TestCase):
         self.assertIn('twitterArticleRichTextView', EXTRACT_POST)
         self.assertIn('/article/${articleId}', EXTRACT_POST)
         self.assertIn('content: articleContent.slice(0, 12000)', EXTRACT_POST)
+        self.assertIn('article-cover-image', EXTRACT_POST)
+
+    def test_article_hydration_url_must_match_a_captured_post(self):
+        expected = "https://x.com/demishassabis/status/2076957440109625718"
+        self.assertEqual(expected, validate_post_detail_target(expected, "2076957440109625718"))
+        for url in (
+            "https://example.org/demishassabis/status/2076957440109625718",
+            "https://x.com/demishassabis/status/999",
+            "https://x.com/settings/account",
+        ):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                validate_post_detail_target(url, "2076957440109625718")
 
     def test_global_post_id_dedup_preserves_both_discovery_sources(self):
         shared = {"post_id": "1", "url": "https://x.com/a/status/1", "handle": "@a", "text": "result"}

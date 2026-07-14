@@ -90,6 +90,7 @@ for (const anchor of root.querySelectorAll("a[href]")) {
 const legacyArticleAnchor = [...root.querySelectorAll('a[href*="/i/article/"]')][0];
 const legacyArticleMatch = legacyArticleAnchor?.href?.match(/\/i\/article\/(\d+)/);
 const articleView = root.querySelector('[data-testid="twitterArticleReadView"]');
+const articlePreview = root.querySelector('[data-testid="article-cover-image"]');
 const articleId = legacyArticleMatch?.[1] || (articleView ? postId : null);
 const articleTitle = text('[data-testid="twitter-article-title"]')
   || legacyArticleAnchor?.innerText?.trim() || "X Article";
@@ -124,6 +125,7 @@ return {
   source_url: externalLinks[0]?.url || null,
   xcancel_url: article?.xcancelUrl || `https://xcancel.com/${rawHandle}/status/${postId}`,
   external_links: externalLinks, media, article,
+  _needs_article_hydration: Boolean(articlePreview && !articleView),
   engagement: {
     replies: metric("reply", "repl"), reposts: metric("retweet", "repost"),
     likes: metric("like", "like"), bookmarks: metric("bookmark", "bookmark"),
@@ -163,6 +165,17 @@ def validate_target(value: str) -> str:
     if not allowed:
         raise ValueError(f"unsupported X collection target: {value}")
     return value
+
+
+def validate_post_detail_target(value: str, expected_post_id: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or parsed.hostname not in {"x.com", "www.x.com"}:
+        raise ValueError("article hydration targets must use https://x.com")
+    parts = [part for part in parsed.path.split("/") if part]
+    valid_handle = len(parts) == 3 and parts[0].replace("_", "").isalnum() and len(parts[0]) <= 15
+    if not valid_handle or parts[1] != "status" or not parts[2].isdigit() or parts[2] != str(expected_post_id):
+        raise ValueError("article hydration target must match its captured post ID")
+    return f"https://x.com/{parts[0]}/status/{parts[2]}"
 
 
 def legacy_kind(value: str) -> str:
@@ -284,6 +297,41 @@ def report_mixed_progress(plan: dict, acquisitions: list[dict], observed: int) -
         pass
 
 
+def hydrate_longform_articles(driver, posts: dict[str, dict], captured_at: str,
+                              global_deadline: float, limit: int = 8) -> int:
+    candidates = [post for post in posts.values() if post.pop("_needs_article_hydration", False)][:limit]
+    hydrated = 0
+    for post in candidates:
+        remaining = global_deadline - time.monotonic()
+        if remaining <= 1:
+            break
+        try:
+            url = validate_post_detail_target(str(post["url"]), str(post["post_id"]))
+            driver.get(url)
+            elements = WebDriverWait(driver, min(30, max(1, remaining))).until(
+                lambda d: d.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]')
+            )
+            enriched = None
+            for element in elements:
+                try:
+                    candidate = driver.execute_script(EXTRACT_POST, element, captured_at)
+                except (JavascriptException, StaleElementReferenceException):
+                    continue
+                if candidate and str(candidate.get("post_id")) == str(post["post_id"]):
+                    enriched = candidate
+                    break
+            if not enriched or not (enriched.get("article") or {}).get("content"):
+                continue
+            discovery_sources = post.get("discovery_sources", [])
+            post.update(enriched)
+            post["discovery_sources"] = discovery_sources
+            post.pop("_needs_article_hydration", None)
+            hydrated += 1
+        except (TimeoutException, ValueError):
+            continue
+    return hydrated
+
+
 def main() -> int:
     args = parse_args()
     captured_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -316,10 +364,12 @@ def main() -> int:
                     break
                 acquisitions.append(collect_target(driver, target, posts, captured_at, deadline, plan["target_unique"], 6))
                 report_mixed_progress(plan, acquisitions, len(posts))
+            articles_hydrated = hydrate_longform_articles(driver, posts, captured_at, deadline)
             envelope = {
                 **plan, "captured_at": captured_at, "host": os.environ.get("XRADAR_HOST", "pi"),
                 "source": "x-mixed", "target": None, "request_id": plan.get("request_id") or args.request_id,
-                "collector": {"targets": len(acquisitions), "limit": plan["target_unique"], "max_minutes": max_minutes},
+                "collector": {"targets": len(acquisitions), "limit": plan["target_unique"], "max_minutes": max_minutes,
+                              "articles_hydrated": articles_hydrated},
                 "acquisitions": acquisitions, "posts": list(posts.values()), "account_signals": [],
             }
             summary = {"output": str(output), "observed": len(posts), "targetUnique": plan["target_unique"], "periodId": plan["period_id"], "acquisitions": len(acquisitions)}
@@ -327,13 +377,15 @@ def main() -> int:
             kind = legacy_kind(args.target)
             target = {"id": str(uuid.uuid4()), "kind": kind, "url": args.target, "quota": args.limit}
             acquisition = collect_target(driver, target, posts, captured_at, deadline, args.limit, args.max_scrolls)
+            articles_hydrated = hydrate_longform_articles(driver, posts, captured_at, deadline)
             envelope = {
                 "scan_id": str(uuid.uuid4()), "captured_at": captured_at,
                 "host": os.environ.get("XRADAR_HOST", "pi"),
                 "source": "x-account" if kind == "account" else "x-home",
                 "target": args.target, "request_id": args.request_id,
                 "collector": {"target": args.target, "scrolls": acquisition["scrolls"], "limit": args.limit,
-                              "max_scrolls": args.max_scrolls, "max_minutes": args.max_minutes},
+                              "max_scrolls": args.max_scrolls, "max_minutes": args.max_minutes,
+                              "articles_hydrated": articles_hydrated},
                 "posts": list(posts.values()), "account_signals": [],
             }
             summary = {"output": str(output), "observed": len(posts), "scrolls": acquisition["scrolls"], "target": args.target}
