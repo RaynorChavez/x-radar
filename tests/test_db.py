@@ -17,6 +17,7 @@ from xradar.db import (
     upsert_post,
 )
 from xradar.cli import main as cli_main
+from xradar.planner import apply_preferences, topic_key
 
 
 class DatabaseTests(unittest.TestCase):
@@ -232,7 +233,52 @@ class DatabaseTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(0, cli_main(["--db", str(self.db_path), "curation"]))
-        self.assertEqual(preferences, json.loads(output.getvalue()))
+        result = json.loads(output.getvalue())
+        self.assertEqual(preferences["instructions"], result["instructions"])
+        self.assertEqual(preferences["topics"], result["topics"])
+        self.assertEqual(0, result["version"])
+
+    def test_v2_capture_preserves_preference_and_multi_source_provenance(self):
+        apply_preferences(self.conn, instructions="", topics=["robotics"], version=7)
+        key = topic_key("robotics")
+        payload = {
+            "schema_version": 2, "scan_id": "period-7", "period_id": "period-7",
+            "preference_version": 7, "target_unique": 150, "captured_at": "2026-07-14T03:00:00Z",
+            "host": "test", "source": "x-mixed",
+            "acquisitions": [
+                {"id": "home-1", "kind": "home", "url": "https://x.com/home", "quota": 60, "observed": 1, "unique": 1},
+                {"id": "search-1", "kind": "topic_search", "url": "https://x.com/search?q=robotics", "topic_key": key, "topic": "robotics", "quota": 45, "observed": 1, "unique": 0},
+            ],
+            "posts": [{
+                "post_id": "v2", "url": "https://x.com/lab/status/v2", "handle": "lab",
+                "text": "robotics result", "score": .8, "decision": "keep",
+                "topic_matches": [{"topic_key": key, "topic": "robotics", "confidence": .9}],
+                "discovery_sources": [{"acquisition_id": "home-1"}, {"acquisition_id": "search-1"}],
+            }],
+        }
+        ingest_capture(self.conn, payload)
+        run = self.conn.execute("SELECT source,preference_version,target_unique FROM runs WHERE scan_id='period-7'").fetchone()
+        self.assertEqual(("x-mixed", 7, 150), tuple(run))
+        self.assertEqual(2, self.conn.execute("SELECT count(*) FROM run_acquisitions").fetchone()[0])
+        self.assertEqual(2, self.conn.execute("SELECT count(*) FROM observation_acquisitions").fetchone()[0])
+        memory = self.conn.execute("SELECT relevant_observations,kept_posts,status FROM topic_account_memory WHERE topic_key=? AND handle='@lab'", (key,)).fetchone()
+        self.assertEqual((1, 1, "candidate"), tuple(memory))
+
+    def test_repeated_topic_observations_promote_account_without_recurating_history(self):
+        apply_preferences(self.conn, instructions="", topics=["cooking"], version=1)
+        key = topic_key("cooking")
+        for index, score in enumerate((.7, .68, .67), 1):
+            ingest_capture(self.conn, {
+                "schema_version": 2, "scan_id": f"cook-{index}", "preference_version": 1,
+                "captured_at": f"2026-07-14T0{index}:00:00Z", "source": "x-mixed",
+                "posts": [{"post_id": f"recipe-{index}", "url": f"https://x.com/chef/status/{index}",
+                  "handle": "chef", "text": "technique", "score": score, "decision": "keep",
+                  "topic_matches": [{"topic_key": key, "confidence": .9}]}],
+            })
+        row = self.conn.execute("SELECT relevant_observations,kept_posts,status FROM topic_account_memory WHERE topic_key=? AND handle='@chef'", (key,)).fetchone()
+        self.assertEqual((3, 3, "known"), tuple(row))
+        scores = [row[0] for row in self.conn.execute("SELECT score FROM post_observations ORDER BY id")]
+        self.assertEqual([.7, .68, .67], scores)
 
 
 

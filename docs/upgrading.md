@@ -27,3 +27,8 @@ local dashboard. Schema initialization is additive and idempotent.
 
 After upgrading, run `bin/doctor`, inspect service status, and confirm that the
 post, observation, and run counts have not decreased.
+
+The topic-discovery upgrade is additive. Keep
+`XRADAR_ACQUISITION_MODE=legacy` during initial deployment if you want to test
+the database and dashboard migrations before enabling 150-post mixed periods;
+switch it to `mixed` and restart the timer after the manual verification scan.

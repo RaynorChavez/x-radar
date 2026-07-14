@@ -13,6 +13,7 @@ export async function GET() {
     const recent = await db.prepare(`SELECT ingested_at ingestedAt,status FROM runs
       WHERE datetime(ingested_at)>=datetime('now','-24 hours') ORDER BY datetime(ingested_at)`).all<{ ingestedAt: string; status: string }>();
     const state = await db.prepare(`SELECT phase,target,request_id requestId,scan_id scanId,observed,
+      target_unique targetUnique,preference_version preferenceVersion,source_progress_json sourceProgressJson,
       pending_sync pendingSync,failed_attempts failedAttempts,auth_status authStatus,
       last_error lastError,started_at startedAt,updated_at updatedAt,last_sync_at lastSyncAt,
       last_backup_at lastBackupAt FROM collector_state WHERE id=1`).first<Record<string, unknown>>();
@@ -28,8 +29,9 @@ export async function GET() {
     if (state && ["collecting", "ranking", "syncing"].includes(String(state.phase)) && ageMinutes(state.updatedAt) > 45) warnings.push({ code: "stuck_cycle", level: "critical", message: `Collector appears stuck in ${state.phase}.` });
     const runTimes = recent.results.map((run) => Date.parse(run.ingestedAt)).sort((a, b) => a - b);
     if (runTimes.some((time, index) => index > 0 && time - runTimes[index - 1] > 100 * 60000)) warnings.push({ code: "schedule_gap", level: "warning", message: "A gap longer than 100 minutes occurred between scans." });
+    const activity = state ? { ...state, sourceProgress: JSON.parse(String(state.sourceProgressJson ?? "{}")), sourceProgressJson: undefined } : { phase: "idle" };
     return Response.json({
-      lastRun: last ?? null, counts, activity: state ?? { phase: "idle" }, warnings,
+      lastRun: last ?? null, counts, activity, warnings,
       reliability: { successfulSlots, expectedSlots: 24, percent: Math.round((successfulSlots / 24) * 100) },
     });
   } catch (error) {

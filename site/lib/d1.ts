@@ -81,6 +81,18 @@ export async function ensureRadarDb() {
       result_count INTEGER, error TEXT
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS fetch_status_idx ON fetch_requests(status, requested_at)"),
+    db.prepare(`CREATE TABLE IF NOT EXISTS run_acquisitions (
+      acquisition_id TEXT PRIMARY KEY, scan_id TEXT NOT NULL, kind TEXT NOT NULL, target TEXT NOT NULL,
+      topic_key TEXT, topic_label TEXT, planned_quota INTEGER NOT NULL DEFAULT 0,
+      observed_count INTEGER NOT NULL DEFAULT 0, unique_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'complete', error TEXT, duration_seconds INTEGER NOT NULL DEFAULT 0
+    )`),
+    db.prepare("CREATE INDEX IF NOT EXISTS run_acquisitions_scan_idx ON run_acquisitions(scan_id)"),
+    db.prepare(`CREATE TABLE IF NOT EXISTS observation_acquisitions (
+      id TEXT PRIMARY KEY, observation_id TEXT NOT NULL, acquisition_id TEXT NOT NULL,
+      is_primary INTEGER NOT NULL DEFAULT 0
+    )`),
+    db.prepare("CREATE INDEX IF NOT EXISTS observation_acquisitions_observation_idx ON observation_acquisitions(observation_id)"),
   ]);
   await db.prepare(`INSERT OR IGNORE INTO curator_preferences(id,instructions,topics_json,updated_at)
     VALUES(1,'','[]',?)`)
@@ -101,9 +113,12 @@ export async function ensureRadarDb() {
     if (!existing.has(name)) await db.prepare(`ALTER TABLE posts ADD COLUMN ${name} ${definition}`).run();
   }
   const observationColumns = await db.prepare("PRAGMA table_info(post_observations)").all<{ name: string }>();
-  if (!observationColumns.results.some((column) => column.name === "scan_id")) {
+  const observationExisting = new Set(observationColumns.results.map((column) => column.name));
+  if (!observationExisting.has("scan_id")) {
     await db.prepare("ALTER TABLE post_observations ADD COLUMN scan_id TEXT NOT NULL DEFAULT 'legacy'").run();
   }
+  if (!observationExisting.has("preference_version")) await db.prepare("ALTER TABLE post_observations ADD COLUMN preference_version INTEGER NOT NULL DEFAULT 0").run();
+  if (!observationExisting.has("topic_matches_json")) await db.prepare("ALTER TABLE post_observations ADD COLUMN topic_matches_json TEXT NOT NULL DEFAULT '[]'").run();
   const accountColumns = await db.prepare("PRAGMA table_info(account_reputation)").all<{ name: string }>();
   const accountExisting = new Set(accountColumns.results.map((column) => column.name));
   if (!accountExisting.has("notes")) await db.prepare("ALTER TABLE account_reputation ADD COLUMN notes TEXT").run();
@@ -116,14 +131,27 @@ export async function ensureRadarDb() {
     ["signals_count", "INTEGER NOT NULL DEFAULT 0"], ["media_count", "INTEGER NOT NULL DEFAULT 0"],
     ["links_count", "INTEGER NOT NULL DEFAULT 0"], ["duration_seconds", "INTEGER NOT NULL DEFAULT 0"],
     ["status", "TEXT NOT NULL DEFAULT 'complete'"],
+    ["schema_version", "INTEGER NOT NULL DEFAULT 1"], ["period_id", "TEXT"],
+    ["preference_version", "INTEGER NOT NULL DEFAULT 0"], ["target_unique", "INTEGER NOT NULL DEFAULT 100"],
   ];
   for (const [name, definition] of runAdditions) {
     if (!runExisting.has(name)) await db.prepare(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`).run();
   }
   const stateColumns = await db.prepare("PRAGMA table_info(collector_state)").all<{ name: string }>();
-  if (!stateColumns.results.some((column) => column.name === "last_backup_at")) {
+  const stateExisting = new Set(stateColumns.results.map((column) => column.name));
+  if (!stateExisting.has("last_backup_at")) {
     await db.prepare("ALTER TABLE collector_state ADD COLUMN last_backup_at TEXT").run();
   }
+  if (!stateExisting.has("target_unique")) await db.prepare("ALTER TABLE collector_state ADD COLUMN target_unique INTEGER NOT NULL DEFAULT 100").run();
+  if (!stateExisting.has("preference_version")) await db.prepare("ALTER TABLE collector_state ADD COLUMN preference_version INTEGER NOT NULL DEFAULT 0").run();
+  if (!stateExisting.has("source_progress_json")) await db.prepare("ALTER TABLE collector_state ADD COLUMN source_progress_json TEXT NOT NULL DEFAULT '{}'").run();
+  const curatorColumns = await db.prepare("PRAGMA table_info(curator_preferences)").all<{ name: string }>();
+  if (!curatorColumns.results.some((column) => column.name === "preference_version")) await db.prepare("ALTER TABLE curator_preferences ADD COLUMN preference_version INTEGER NOT NULL DEFAULT 0").run();
+  const requestColumns = await db.prepare("PRAGMA table_info(fetch_requests)").all<{ name: string }>();
+  const requestExisting = new Set(requestColumns.results.map((column) => column.name));
+  if (!requestExisting.has("kind")) await db.prepare("ALTER TABLE fetch_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'account'").run();
+  if (!requestExisting.has("preference_version")) await db.prepare("ALTER TABLE fetch_requests ADD COLUMN preference_version INTEGER NOT NULL DEFAULT 0").run();
+  if (!requestExisting.has("bootstrap_topics_json")) await db.prepare("ALTER TABLE fetch_requests ADD COLUMN bootstrap_topics_json TEXT NOT NULL DEFAULT '[]'").run();
   await db.prepare(`UPDATE posts SET xcancel_url =
     'https://xcancel.com/' || ltrim(handle, '@') || '/status/' || post_id
     WHERE xcancel_url IS NULL OR xcancel_url = ''`).run();

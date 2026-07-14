@@ -15,7 +15,7 @@ pip install -e '.[collector]'
 cp .env.example .env
 ```
 
-Set `XRADAR_MODE=split`, the private Sites URL, a random ingest token, the Sites
+Set `XRADAR_MODE=split`, `XRADAR_ACQUISITION_MODE=mixed`, the private Sites URL, a random ingest token, the Sites
 bypass token, and a non-identifying host label in `.env`.
 
 Install Firefox, geckodriver, and the Codex CLI through their official
@@ -40,7 +40,7 @@ sudo loginctl enable-linger "$USER"
 systemctl --user list-timers 'x-radar*'
 ```
 
-The hourly timer collects the home feed. The dispatcher checks directed scan
+The hourly timer runs a topic-aware 150-post discovery period. The dispatcher checks directed scan
 requests every minute, synchronization retries every ten minutes, and backups
 run daily. `flock` prevents overlapping collection cycles.
 

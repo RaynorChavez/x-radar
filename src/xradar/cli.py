@@ -27,6 +27,7 @@ from .site_client import (
     claim_request, complete_request, ingest_capture as ingest_site_capture,
     mutations, pending_requests, report_progress, send_event, send_heartbeat,
 )
+from .planner import apply_preferences, build_period_plan, set_query_pack
 
 
 def parser() -> argparse.ArgumentParser:
@@ -73,6 +74,9 @@ def parser() -> argparse.ArgumentParser:
     progress.add_argument("--request-id")
     progress.add_argument("--scan-id")
     progress.add_argument("--observed", type=int, default=0)
+    progress.add_argument("--target-unique", type=int)
+    progress.add_argument("--preference-version", type=int)
+    progress.add_argument("--source-progress")
     progress.add_argument("--error")
     progress.add_argument("--error-code")
 
@@ -100,6 +104,18 @@ def parser() -> argparse.ArgumentParser:
 
     commands.add_parser("status")
     commands.add_parser("curation")
+
+    period = commands.add_parser("plan-period")
+    period.add_argument("--output", required=True)
+    period.add_argument("--request-id")
+    period.add_argument("--bootstrap-topics", default="[]")
+
+    queries = commands.add_parser("topic-queries-set")
+    queries.add_argument("topic")
+    queries.add_argument("--query", action="append", required=True)
+    queries.add_argument("--revision", type=int, required=True)
+
+    commands.add_parser("topic-memory")
 
     site_ingest = commands.add_parser("site-ingest")
     site_ingest.add_argument("capture")
@@ -219,7 +235,10 @@ def main(argv: list[str] | None = None) -> int:
             "phase": args.phase, "target": args.target, "requestId": args.request_id,
             "scanId": args.scan_id, "observed": args.observed,
             "error": args.error, "errorCode": args.error_code,
+            "targetUnique": args.target_unique, "preferenceVersion": args.preference_version,
         }
+        if args.source_progress:
+            payload["sourceProgress"] = json.loads(args.source_progress)
         print(json.dumps(report_progress({key: value for key, value in payload.items() if value is not None})))
     elif args.command == "pull-site-mutations":
         cursor = args.after
@@ -233,9 +252,10 @@ def main(argv: list[str] | None = None) -> int:
             elif item["kind"] == "post_state":
                 set_post_state(conn, item["post_id"], saved=item.get("saved"), pinned=item.get("pinned"), dismissed=item.get("dismissed"), enqueue_change=False)
             elif item["kind"] == "curation":
-                conn.execute(
-                    "INSERT INTO site_state(key,value) VALUES('curator_preferences',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (json.dumps({"instructions": item.get("instructions", ""), "topics": item.get("topics", []), "updated_at": item.get("updated_at")}),),
+                apply_preferences(
+                    conn, instructions=item.get("instructions", ""), topics=item.get("topics", []),
+                    version=int(item.get("preferenceVersion") or item.get("version") or 0),
+                    updated_at=item.get("updated_at") or item.get("updatedAt"),
                 )
         next_cursor = int(result.get("cursor", cursor))
         conn.execute("INSERT INTO site_state(key,value) VALUES('mutation_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(next_cursor),))
@@ -265,4 +285,37 @@ def main(argv: list[str] | None = None) -> int:
         row = conn.execute("SELECT value FROM site_state WHERE key='curator_preferences'").fetchone()
         default = {"instructions": "", "topics": []}
         print(json.dumps(json.loads(row["value"]) if row else default, indent=2))
+    elif args.command == "plan-period":
+        bootstrap = json.loads(args.bootstrap_topics)
+        if not isinstance(bootstrap, list):
+            raise ValueError("--bootstrap-topics must be a JSON array")
+        plan = build_period_plan(conn, request_id=args.request_id, bootstrap_topics=bootstrap)
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(plan, indent=2) + "\n")
+        conn.commit()
+        print(json.dumps({"output": str(output), "periodId": plan["period_id"], "targetUnique": plan["target_unique"], "targets": len(plan["targets"])}))
+    elif args.command == "topic-queries-set":
+        values = set_query_pack(conn, args.topic, args.query, args.revision)
+        conn.commit()
+        print(json.dumps({"topic": args.topic, "queries": values, "revision": args.revision}))
+    elif args.command == "topic-memory":
+        rows = conn.execute("""
+            SELECT t.label topic,m.handle,m.relevant_observations,m.kept_posts,
+              CASE WHEN m.relevant_observations=0 THEN 0 ELSE m.score_sum/m.relevant_observations END average_score,
+              m.confidence,m.status,m.last_observed_at,m.last_scanned_at
+            FROM topic_account_memory m JOIN topic_state t ON t.topic_key=m.topic_key
+            ORDER BY t.label,m.status DESC,m.confidence DESC
+        """)
+        topic_rows = conn.execute("""
+            SELECT topic_key AS topicKey,label,active,query_pack_json AS queryPackJson,
+              query_pack_revision AS queryPackRevision,last_planned_at AS lastPlannedAt,
+              last_searched_at AS lastSearchedAt FROM topic_state ORDER BY active DESC,label
+        """)
+        preference = conn.execute("SELECT value FROM site_state WHERE key='curator_preferences'").fetchone()
+        print(json.dumps({
+            "preference": json.loads(preference["value"]) if preference else {"version": 0, "topics": []},
+            "topics": [{**dict(row), "queryPack": json.loads(row["queryPackJson"]), "queryPackJson": None} for row in topic_rows],
+            "accounts": [dict(row) for row in rows],
+        }, indent=2))
     return 0

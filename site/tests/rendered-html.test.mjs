@@ -53,7 +53,9 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(dashboard, /Complete scan history/);
   assert.match(dashboard, /Load 100 more observations/);
   assert.match(dashboard, /24-HOUR VERIFICATION/);
-  assert.match(dashboard, /Run home now/);
+  assert.match(dashboard, /Run discovery now/);
+  assert.match(dashboard, /150-post discovery period/);
+  assert.match(dashboard, /preferenceVersion/);
   assert.match(dashboard, /Run account now/);
   assert.match(dashboard, /Pi checks the queue every minute/);
   assert.doesNotMatch(dashboard, /Queue account scan/);
@@ -110,6 +112,10 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(verificationMigration, /ALTER TABLE `runs` ADD `duration_seconds`/);
   assert.doesNotMatch(verificationMigration, /DROP TABLE `post_observations`/);
   assert.match(curationMigration, /CREATE TABLE `curator_preferences`/);
+  const discoveryMigration = await readFile(new URL("../drizzle/0007_quick_doctor_octopus.sql", import.meta.url), "utf8");
+  assert.match(discoveryMigration, /CREATE TABLE `run_acquisitions`/);
+  assert.match(discoveryMigration, /`preference_version`/);
+  assert.match(discoveryMigration, /`bootstrap_topics_json`/);
   assert.match(ingest, /xcancel\.com\/i\/article/);
   assert.match(ingest, /INSERT INTO post_observations/);
   assert.match(feed, /view === "history"/);

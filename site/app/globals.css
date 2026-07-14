@@ -183,6 +183,15 @@ h1 { margin: 0; font-size: 22px; font-weight: 520; line-height: 1; letter-spacin
 .phase-line > span.phase-error { background: var(--danger); }
 .phase-line b { color: #bcc1c5; font: 600 8px var(--font-mono); text-transform: uppercase; }
 .phase-line small { min-width: 0; overflow: hidden; color: var(--quiet); font: 500 7px var(--font-mono); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.period-meta { display: flex; justify-content: space-between; padding: 8px 0 4px; color: var(--quiet); font: 500 7px var(--font-mono); text-transform: uppercase; }
+.period-meta b { color: var(--azure-light); font-size: 8px; }
+.source-progress { display: grid; gap: 4px; padding: 5px 0 9px; border-bottom: 1px solid var(--line); }
+.source-progress > div { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font: 500 7px var(--font-mono); }
+.source-progress span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: capitalize; }
+.source-progress b { flex: 0 0 auto; color: #a8afb4; }
+.run-sources { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 6px; margin: 12px 0; }
+.run-sources > div { display: flex; justify-content: space-between; gap: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--ink-2); padding: 8px 9px; color: var(--muted); font: 500 8px var(--font-mono); text-transform: capitalize; }
+.run-sources b { color: var(--azure-light); }
 .warning-list { display: grid; gap: 5px; margin: 10px 0; }
 .warning-list p, .all-clear { margin: 0; padding: 7px 8px; border-left: 2px solid #685c3b; border-radius: 0 5px 5px 0; background: #1c1914; color: #b9a774; font: 500 8px/1.4 var(--font-mono); }
 .warning-list p.critical { border-color: var(--danger); background: #211614; color: #c98272; }

@@ -8,22 +8,28 @@ export async function POST(request: Request) {
     const body = await request.json() as {
       phase?: string; target?: string | null; requestId?: string | null; scanId?: string | null;
       observed?: number; error?: string | null; errorCode?: string | null; startedAt?: string | null;
+      targetUnique?: number; preferenceVersion?: number; sourceProgress?: Record<string, unknown>;
     };
     if (!body.phase || !phases.has(body.phase)) return Response.json({ error: "Invalid phase" }, { status: 400 });
     const now = new Date().toISOString();
     const authStatus = body.errorCode === "AUTH_REQUIRED" ? "required" : "ok";
     const db = await ensureRadarDb();
     await db.prepare(`INSERT INTO collector_state(
-      id,phase,target,request_id,scan_id,observed,auth_status,last_error,started_at,updated_at
-    ) VALUES(1,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+      id,phase,target,request_id,scan_id,observed,target_unique,preference_version,source_progress_json,
+      auth_status,last_error,started_at,updated_at
+    ) VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
       phase=excluded.phase,target=COALESCE(excluded.target,collector_state.target),
       request_id=COALESCE(excluded.request_id,collector_state.request_id),
       scan_id=COALESCE(excluded.scan_id,collector_state.scan_id),observed=excluded.observed,
+      target_unique=COALESCE(excluded.target_unique,collector_state.target_unique),
+      preference_version=COALESCE(excluded.preference_version,collector_state.preference_version),
+      source_progress_json=CASE WHEN excluded.source_progress_json='{}' THEN collector_state.source_progress_json ELSE excluded.source_progress_json END,
       auth_status=excluded.auth_status,last_error=excluded.last_error,
       started_at=CASE WHEN excluded.phase='collecting' THEN excluded.started_at ELSE collector_state.started_at END,
       updated_at=excluded.updated_at`).bind(
         body.phase, body.target ?? null, body.requestId ?? null, body.scanId ?? null,
-        body.observed ?? 0, authStatus, body.error ?? null, body.startedAt ?? now, now,
+        body.observed ?? 0, body.targetUnique ?? 100, body.preferenceVersion ?? 0,
+        JSON.stringify(body.sourceProgress ?? {}), authStatus, body.error ?? null, body.startedAt ?? now, now,
       ).run();
     if (body.requestId) {
       await db.prepare("UPDATE fetch_requests SET status=?,error=? WHERE id=?")

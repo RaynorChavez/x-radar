@@ -2,7 +2,7 @@
 
 ## Data ownership
 
-The collector host is the durable source of truth. SQLite stores canonical posts, scan runs, per-run observations, account evidence and overrides, user post state, and an outbox. Sites D1 is a synchronized read/write mirror optimized for the private dashboard.
+The collector host is the durable source of truth. SQLite stores canonical posts, collection periods, per-period observations and acquisition provenance, versioned topic state, topic-account memory, account evidence and overrides, user post state, and an outbox. Sites D1 is a synchronized read/write mirror optimized for the private dashboard.
 
 Every capture carries a UUID `scan_id`. Delivery is idempotent by that ID. A post is unique by `post_id`; seeing it again updates mutable metadata and adds a new `(scan_id, post_id)` observation. This keeps storage growth proportional to new posts plus small observation rows.
 
@@ -22,7 +22,18 @@ credentials remain outside this repository.
 
 ## Collection and ranking
 
-Firefox runs headlessly against a persistent, manually authenticated profile. Each pass stops after 100 posts, 30 scrolls, or 25 minutes. The raw envelope is untrusted input. Luna `xhigh` applies the ranking rubric conservatively and may add evidence for observable bait patterns, but it cannot create a hard block.
+Firefox runs headlessly against a persistent, manually authenticated profile.
+Normal periods target 150 unique posts: 60 Home, 45 active-topic search, 30
+known topic accounts, and 15 exploration. One browser visits targets
+sequentially and stops after 30 minutes. Focused account requests retain their
+100-post, 25-minute ceiling. Global post-id deduplication keeps every source as
+provenance rather than duplicating the post.
+
+Curator preferences are revisioned. Adding a topic queues a coalesced bootstrap
+period; removing one affects only future periods. Luna `xhigh` supplies bounded
+query packs and applies the ranking rubric conservatively. The raw envelope is
+untrusted input, and Luna may add evidence for observable bait patterns but
+cannot create a hard block or navigate an account that was not first observed.
 
 ## Synchronization
 
@@ -40,4 +51,6 @@ Dashboard mutations are append-only records with a numeric cursor. The Pi pulls 
 
 ## Reliability target
 
-The stabilization gate is 72 hours with at least 65 successful hourly cycles, no lost local observations, and eventual dashboard synchronization. A Sites outage is never a collection failure.
+The initial stabilization gate is 24 hours with successful hourly slots, no
+lost local observations, bounded runtime and resource use, and eventual
+dashboard synchronization. A Sites outage is never a collection failure.

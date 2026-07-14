@@ -9,6 +9,7 @@ X Radar has one codebase and two runtime modes.
 | `XRADAR_INGEST_TOKEN` | same random value in Sites and `.env` | random local value |
 | `XRADAR_SITE_BYPASS_TOKEN` | private Sites bypass token | empty |
 | `XRADAR_HOST` | collector label, such as `pi` | machine label |
+| `XRADAR_ACQUISITION_MODE` | `mixed` normally; `legacy` for rollback | same |
 
 Generate an ingest token with a cryptographically secure password generator.
 Never store the real value in Git. In split mode, add it to the Sites runtime
@@ -21,3 +22,8 @@ files and should not be copied into the public repository.
 
 The ignored `site/.openai/hosting.json` identifies one Sites installation. The
 tracked `.openai/hosting.example.json` is the portable template.
+
+Mixed acquisition targets 150 unique posts per period across Home, active-topic
+search, known topic accounts, and bounded exploration. Setting
+`XRADAR_ACQUISITION_MODE=legacy` restores the earlier single-target 100-post
+Home behavior without changing or deleting topic memory.

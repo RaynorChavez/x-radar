@@ -24,6 +24,7 @@ XRADAR_SITE_URL=http://127.0.0.1:8787
 XRADAR_INGEST_TOKEN=replace-with-a-random-secret
 XRADAR_SITE_BYPASS_TOKEN=
 XRADAR_HOST=single-machine
+XRADAR_ACQUISITION_MODE=mixed
 ```
 
 Install Node.js, Firefox, geckodriver, and the Codex CLI, then follow the

@@ -40,6 +40,8 @@ export const postObservations = sqliteTable("post_observations", {
   isAd: integer("is_ad", { mode: "boolean" }).notNull().default(false),
   isReply: integer("is_reply", { mode: "boolean" }).notNull().default(false),
   isQuote: integer("is_quote", { mode: "boolean" }).notNull().default(false),
+  preferenceVersion: integer("preference_version").notNull().default(0),
+  topicMatchesJson: text("topic_matches_json").notNull().default("[]"),
 }, (table) => [
   index("observations_captured_idx").on(table.capturedAt, table.observedIndex),
   index("observations_post_idx").on(table.postId),
@@ -74,6 +76,10 @@ export const runs = sqliteTable("runs", {
   linksCount: integer("links_count").notNull().default(0),
   durationSeconds: integer("duration_seconds").notNull().default(0),
   status: text("status").notNull().default("complete"),
+  schemaVersion: integer("schema_version").notNull().default(1),
+  periodId: text("period_id"),
+  preferenceVersion: integer("preference_version").notNull().default(0),
+  targetUnique: integer("target_unique").notNull().default(100),
   ingestedAt: text("ingested_at").notNull(),
 });
 
@@ -84,6 +90,9 @@ export const collectorState = sqliteTable("collector_state", {
   requestId: text("request_id"),
   scanId: text("scan_id"),
   observed: integer("observed").notNull().default(0),
+  targetUnique: integer("target_unique").notNull().default(100),
+  preferenceVersion: integer("preference_version").notNull().default(0),
+  sourceProgressJson: text("source_progress_json").notNull().default("{}"),
   pendingSync: integer("pending_sync").notNull().default(0),
   failedAttempts: integer("failed_attempts").notNull().default(0),
   authStatus: text("auth_status").notNull().default("ok"),
@@ -98,6 +107,7 @@ export const curatorPreferences = sqliteTable("curator_preferences", {
   id: integer("id").primaryKey(),
   instructions: text("instructions").notNull().default(""),
   topicsJson: text("topics_json").notNull().default("[]"),
+  preferenceVersion: integer("preference_version").notNull().default(0),
   updatedAt: text("updated_at").notNull(),
 });
 
@@ -121,9 +131,34 @@ export const fetchRequests = sqliteTable("fetch_requests", {
   id: text("id").primaryKey(),
   handle: text("handle").notNull(),
   includeReplies: integer("include_replies", { mode: "boolean" }).notNull().default(true),
+  kind: text("kind").notNull().default("account"),
+  preferenceVersion: integer("preference_version").notNull().default(0),
+  bootstrapTopicsJson: text("bootstrap_topics_json").notNull().default("[]"),
   status: text("status").notNull().default("queued"),
   requestedAt: text("requested_at").notNull(),
   completedAt: text("completed_at"),
   resultCount: integer("result_count"),
   error: text("error"),
 }, (table) => [index("fetch_status_idx").on(table.status, table.requestedAt)]);
+
+export const runAcquisitions = sqliteTable("run_acquisitions", {
+  acquisitionId: text("acquisition_id").primaryKey(),
+  scanId: text("scan_id").notNull(),
+  kind: text("kind").notNull(),
+  target: text("target").notNull(),
+  topicKey: text("topic_key"),
+  topicLabel: text("topic_label"),
+  plannedQuota: integer("planned_quota").notNull().default(0),
+  observedCount: integer("observed_count").notNull().default(0),
+  uniqueCount: integer("unique_count").notNull().default(0),
+  status: text("status").notNull().default("complete"),
+  error: text("error"),
+  durationSeconds: integer("duration_seconds").notNull().default(0),
+}, (table) => [index("run_acquisitions_scan_idx").on(table.scanId)]);
+
+export const observationAcquisitions = sqliteTable("observation_acquisitions", {
+  id: text("id").primaryKey(),
+  observationId: text("observation_id").notNull(),
+  acquisitionId: text("acquisition_id").notNull(),
+  isPrimary: integer("is_primary", { mode: "boolean" }).notNull().default(false),
+}, (table) => [index("observation_acquisitions_observation_idx").on(table.observationId)]);

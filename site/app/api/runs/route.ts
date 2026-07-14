@@ -7,7 +7,8 @@ export async function GET(request: Request) {
     const rows = await db.prepare(`SELECT scan_id scanId,host,source,target,request_id requestId,
       captured_at capturedAt,posts_seen postsSeen,posts_kept postsKept,posts_added postsAdded,
       duplicates,candidates,discarded,signals_count signalsCount,media_count mediaCount,
-      links_count linksCount,duration_seconds durationSeconds,status,ingested_at ingestedAt
+      links_count linksCount,duration_seconds durationSeconds,status,schema_version schemaVersion,
+      period_id periodId,preference_version preferenceVersion,target_unique targetUnique,ingested_at ingestedAt
       FROM runs ORDER BY datetime(ingested_at) DESC LIMIT ?`).bind(limit).all();
     return Response.json({ runs: rows.results });
   } catch (error) {

@@ -12,6 +12,7 @@ dashboard without making the dashboard the source of truth.
 - Daily top-signal briefing and a longer curated feed.
 - Complete **All seen** history with one post record and many scan timestamps.
 - Directed scans for an account's posts and replies.
+- Topic-driven 150-post discovery periods spanning Home, X search, known accounts, and exploration.
 - Lexical and account search, save, pin, dismiss, and observation history.
 - Evidence-backed account controls for bait and non-additive commentary.
 - Rich articles, media, external links, profile images, X, and XCancel links.
@@ -24,9 +25,10 @@ bookmarks, sends messages, or changes account settings.
 ## Architecture
 
 ```text
-X → Firefox collector → SQLite + compressed archive
+X Home/search/accounts → one Firefox session → SQLite + compressed archive
                            ├── Luna xhigh ranking
                            ├── account evidence and user overrides
+                           ├── versioned topics and topic-account memory
                            └── durable outbox → dashboard database → web UI
 ```
 

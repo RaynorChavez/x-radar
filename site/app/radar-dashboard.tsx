@@ -49,7 +49,7 @@ export type RadarPost = {
 
 type Stats = { scanned: number; observations?: number; kept: number; candidates: number; discarded: number; authors: number };
 type Reputation = { handle: string; disposition: string; strikePoints: number; confidence: number; notes?: string | null };
-type FetchRequest = { id: string; handle: string; targetKind?: "home" | "account"; includeReplies: boolean; status: string; requestedAt: string; resultCount?: number | null; error?: string | null };
+type FetchRequest = { id: string; handle: string; targetKind?: "mixed" | "account"; includeReplies: boolean; status: string; requestedAt: string; preferenceVersion?: number; bootstrapTopics?: string[]; resultCount?: number | null; error?: string | null };
 type Range = "day" | "week" | "month" | "year" | "all";
 type Surface = "briefing" | "signal" | "saved" | "history";
 type SortMode = "signal" | "newest";
@@ -58,16 +58,18 @@ type RadarRun = {
   capturedAt: string; ingestedAt: string; postsSeen: number; postsKept: number; postsAdded: number;
   duplicates: number; candidates: number; discarded: number; signalsCount: number; mediaCount: number;
   linksCount: number; durationSeconds: number; status: string;
+  schemaVersion?: number; periodId?: string | null; preferenceVersion?: number; targetUnique?: number;
 };
+type RunAcquisition = { acquisitionId: string; kind: string; target: string; topicKey?: string | null; topicLabel?: string | null; plannedQuota: number; observedCount: number; uniqueCount: number; status: string; error?: string | null; durationSeconds: number };
 type PostObservation = { scanId: string; capturedAt: string; score: number; decision: string; source?: string; target?: string };
 type CollectorStatus = {
   lastRun: null | { capturedAt: string; ingestedAt: string; postsSeen: number; postsKept: number };
   counts?: { uniquePosts: number; observations: number; runs: number };
-  activity?: { phase: string; target?: string | null; observed?: number; updatedAt?: string; pendingSync?: number; lastSyncAt?: string; lastBackupAt?: string };
+  activity?: { phase: string; target?: string | null; observed?: number; targetUnique?: number; preferenceVersion?: number; sourceProgress?: Record<string, { kind: string; topic?: string | null; planned: number; observed: number; unique: number; status: string }>; updatedAt?: string; pendingSync?: number; lastSyncAt?: string; lastBackupAt?: string };
   warnings?: Array<{ code: string; level: "warning" | "critical"; message: string }>;
   reliability?: { successfulSlots: number; expectedSlots: number; percent: number };
 };
-type CuratorPreferences = { instructions: string; topics: string[]; updatedAt?: string | null };
+type CuratorPreferences = { instructions: string; topics: string[]; preferenceVersion?: number; updatedAt?: string | null };
 type UndoToast = { message: string; undo: () => Promise<void> };
 
 const ranges: Array<{ id: Range; label: string; short: string }> = [
@@ -283,7 +285,7 @@ export function RadarDashboard({
   const [submittedSearch, setSubmittedSearch] = useState<{ query: string; handle: string } | null>(null);
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatus | null>(null);
   const [runs, setRuns] = useState<RadarRun[]>([]);
-  const [selectedRun, setSelectedRun] = useState<{ run: RadarRun; observations: RadarPost[] } | null>(null);
+  const [selectedRun, setSelectedRun] = useState<{ run: RadarRun; acquisitions?: RunAcquisition[]; observations: RadarPost[] } | null>(null);
   const [observationHistory, setObservationHistory] = useState<Record<string, PostObservation[] | null>>({});
   const [toast, setToast] = useState<UndoToast | null>(null);
   const [homeRequestState, setHomeRequestState] = useState<"idle" | "sending" | "sent" | "error">("idle");
@@ -411,12 +413,12 @@ export function RadarDashboard({
 
   async function queueHome() {
     setHomeRequestState("sending");
-    const response = await fetch("/api/fetch-requests", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "home" }) });
+    const response = await fetch("/api/fetch-requests", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "mixed" }) });
     if (response.ok) {
       const data = await response.json();
       setRequests((current) => [data.request, ...current]);
       setHomeRequestState("sent");
-      setToast({ message: "Home scan requested. The Pi checks the queue every minute." });
+      setToast({ message: "150-post discovery period requested. The Pi checks the queue every minute." });
       window.setTimeout(() => setHomeRequestState("idle"), 3000);
     } else {
       setHomeRequestState("error");
@@ -438,8 +440,10 @@ export function RadarDashboard({
       body: JSON.stringify({ instructions: curation.instructions, topics: curation.topics }),
     });
     if (!response.ok) { setCurationState("error"); return; }
-    setCuration(await response.json());
+    const saved = await response.json();
+    setCuration(saved);
     setCurationState("saved");
+    if (saved.bootstrapQueued) setToast({ message: `Saved. Discovery queued for ${saved.addedTopics.join(", ")}.` });
     window.setTimeout(() => setCurationState("idle"), 2500);
   }
 
@@ -526,7 +530,7 @@ export function RadarDashboard({
         <div className="masthead-actions">
           <div className="run-status"><span className={collectorStatus?.warnings?.some((warning) => warning.level === "critical") ? "stale" : ""} />
             {collectorStatus?.activity && ["collecting", "ranking", "syncing"].includes(collectorStatus.activity.phase)
-              ? `${collectorStatus.activity.phase} · ${collectorStatus.activity.observed ?? 0} observed`
+              ? `${collectorStatus.activity.phase} · ${collectorStatus.activity.observed ?? 0}/${collectorStatus.activity.targetUnique ?? 150} observed`
               : collectorStatus?.lastRun
                 ? `Last scan ${fetchedLabel(collectorStatus.lastRun.capturedAt).replace("fetched ", "")} · ${collectorStatus.lastRun.postsSeen} seen`
                 : "Waiting for collector status"}
@@ -690,18 +694,25 @@ export function RadarDashboard({
             <div className="phase-line"><span className={`phase-${collectorStatus?.activity?.phase ?? "idle"}`} />
               <b>{collectorStatus?.activity?.phase ?? "idle"}</b><small>{collectorStatus?.activity?.target?.replace("https://x.com/", "") ?? "waiting for next cycle"}</small>
             </div>
+            {collectorStatus?.activity?.preferenceVersion != null && <div className="period-meta"><span>Preference v{collectorStatus.activity.preferenceVersion}</span><b>{collectorStatus.activity.observed ?? 0}/{collectorStatus.activity.targetUnique ?? 150}</b></div>}
+            {Object.values(collectorStatus?.activity?.sourceProgress ?? {}).length > 0 && <div className="source-progress" aria-label="Discovery source progress">
+              {Object.entries(collectorStatus?.activity?.sourceProgress ?? {}).map(([id, item]) => <div key={id}>
+                <span>{item.topic ? `${item.kind.replaceAll("_", " ")} · ${item.topic}` : item.kind.replaceAll("_", " ")}</span>
+                <b>{item.unique}/{item.planned}</b>
+              </div>)}
+            </div>}
             {(collectorStatus?.warnings?.length ?? 0) > 0 ? <div className="warning-list">{collectorStatus!.warnings!.map((warning) => <p className={warning.level} key={warning.code}>{warning.message}</p>)}</div> : <p className="all-clear">No reliability warnings.</p>}
             <div className="run-list">
               <div className="run-list-title"><b>Recent runs</b><span>{runs.length} loaded</span></div>
               {runs.slice(0, 6).map((run) => <button key={run.scanId} onClick={() => openRun(run.scanId)}>
-                <span><b>{run.source === "x-account" ? run.target?.split("/")[3] ?? "account" : "home"}</b><small>{formatDateTime(new Date(run.ingestedAt))}</small></span>
+                <span><b>{run.source === "x-account" ? run.target?.split("/")[3] ?? "account" : run.source === "x-mixed" ? "discovery" : "home"}</b><small>{formatDateTime(new Date(run.ingestedAt))}</small></span>
                 <em>{run.postsSeen} seen</em>
               </button>)}
             </div>
           </section>
           <section className={`curator-card ${deskOpen && deskSection !== "settings" ? "drawer-hidden" : ""}`} id="desk-curator">
             <div className="curator-heading"><div><p className="eyebrow">LUNA CURATOR</p><h2>Shape the signal</h2></div><span>{curation.topics.length}/24</span></div>
-            <p className="subcopy">Soft priorities for the next ranking cycle. All seen posts still remain in history.</p>
+            <p className="subcopy">Topics shape future discovery and ranking. New topics queue a bootstrap scan; existing history is never recategorized.</p>
             <div className="topic-list" aria-label="Curator topics">
               {curation.topics.map((topic) => <span key={topic}>{topic}<button aria-label={`Remove ${topic}`} onClick={() => { setCuration((current) => ({ ...current, topics: current.topics.filter((item) => item !== topic) })); setCurationState("idle"); }}>−</button></span>)}
               {curation.topics.length === 0 && <small>No topic priorities yet.</small>}
@@ -709,11 +720,12 @@ export function RadarDashboard({
             <div className="topic-add"><input value={topicDraft} maxLength={60} onChange={(event) => setTopicDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addTopic(); } }} placeholder="Add a topic" aria-label="New curator topic" /><button onClick={addTopic} disabled={!topicDraft.trim() || curation.topics.length >= 24} aria-label="Add topic">+</button></div>
             <label htmlFor="curator-instructions">Custom instructions</label>
             <textarea id="curator-instructions" maxLength={4000} value={curation.instructions} onChange={(event) => { setCuration((current) => ({ ...current, instructions: event.target.value })); setCurationState("idle"); }} placeholder="Prefer primary research, concrete results, and novel technical detail…" />
-            <div className="curator-save"><small>{curationState === "saved" ? "Saved for next cycle" : curationState === "error" ? "Couldn’t save changes" : curation.updatedAt ? `Last saved ${formatDateTime(new Date(curation.updatedAt))}` : "Not synchronized yet"}</small><button onClick={saveCuration} disabled={curationState === "saving" || curationState === "loading"}>{curationState === "saving" ? "Saving…" : "Save brief"}</button></div>
+            <div className="curator-save"><small>{curationState === "saved" ? "Saved for future scans" : curationState === "error" ? "Couldn’t save changes" : curation.updatedAt ? `v${curation.preferenceVersion ?? 0} · ${formatDateTime(new Date(curation.updatedAt))}` : "Not synchronized yet"}</small><button onClick={saveCuration} disabled={curationState === "saving" || curationState === "loading"}>{curationState === "saving" ? "Saving…" : "Save brief"}</button></div>
           </section>
           <section className={`fetch-card ${deskOpen && deskSection !== "config" ? "drawer-hidden" : ""}`} id="desk-scans">
-            <div className="fetch-title-row"><p className="eyebrow">DIRECTED SCAN</p><button className="home-now" onClick={queueHome} disabled={homeRequestState === "sending"}>{homeRequestState === "sending" ? "Requesting…" : homeRequestState === "sent" ? "Requested ✓" : "Run home now"}</button></div>
-            {homeRequestState === "error" && <p className="form-note error">Couldn’t request a home scan.</p>}
+            <div className="fetch-title-row"><p className="eyebrow">DIRECTED SCAN</p><button className="home-now" onClick={queueHome} disabled={homeRequestState === "sending"}>{homeRequestState === "sending" ? "Requesting…" : homeRequestState === "sent" ? "Requested ✓" : "Run discovery now"}</button></div>
+            {homeRequestState === "error" && <p className="form-note error">Couldn’t request a discovery period.</p>}
+            <p className="subcopy">Collect up to 150 unique posts: 60 Home, 45 topic search, 30 known accounts, and 15 exploration.</p>
             <h2>Fetch an account</h2>
             <p className="subcopy">Queue a focused pass through an account’s original posts and conversation replies.</p>
             <form onSubmit={queueAccount}>
@@ -735,7 +747,7 @@ export function RadarDashboard({
               <div className="ledger-list">
                 {requests.length === 0 ? <p className="quiet">No directed scans queued.</p> : requests.slice(0, 6).map((request) => (
                   <div className="ledger-item" key={request.id}>
-                    <div><b>{request.targetKind === "home" || request.handle === "@home" ? "Home feed" : request.handle}</b><span>{request.status === "complete" && request.resultCount != null ? `${request.resultCount} posts collected` : request.status === "collecting" ? "Browser is scrolling" : request.status === "ranking" ? "Luna is ranking" : request.status === "syncing" ? "Synchronizing dashboard" : request.includeReplies ? "posts + replies" : "posts only"}</span></div>
+                    <div><b>{request.targetKind === "mixed" || request.handle === "@home" || request.handle === "@mixed" ? "Discovery period" : request.handle}</b><span>{request.status === "complete" && request.resultCount != null ? `${request.resultCount} posts collected` : request.status === "collecting" ? "Browser is collecting sources" : request.status === "ranking" ? "Luna is ranking" : request.status === "syncing" ? "Synchronizing dashboard" : request.bootstrapTopics?.length ? `bootstrap · ${request.bootstrapTopics.join(", ")}` : request.targetKind === "mixed" ? "150-post mixed collection" : request.includeReplies ? "posts + replies" : "posts only"}</span></div>
                     <em className={`status-${request.status}`}>{request.status}</em>
                   </div>
                 ))}
@@ -759,9 +771,10 @@ export function RadarDashboard({
       <footer><span>X RADAR / PRIVATE SIGNAL INDEX</span><span>{collectorStatus?.counts?.runs ?? 0} scans synchronized</span></footer>
       {selectedRun && <div className="detail-overlay" role="dialog" aria-modal="true" aria-label="Scan detail" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedRun(null); }}>
         <section className="run-detail">
-          <div className="detail-head"><div><p className="eyebrow">SCAN DETAIL</p><h2>{selectedRun.run.source === "x-account" ? selectedRun.run.target?.split("/")[3] ?? "Account" : "Home feed"}</h2><span>{formatDateTime(new Date(selectedRun.run.ingestedAt), true)} · {Math.round(selectedRun.run.durationSeconds / 60)} min</span></div><button onClick={() => setSelectedRun(null)} aria-label="Close scan detail">×</button></div>
+          <div className="detail-head"><div><p className="eyebrow">SCAN DETAIL</p><h2>{selectedRun.run.source === "x-account" ? selectedRun.run.target?.split("/")[3] ?? "Account" : selectedRun.run.source === "x-mixed" ? "Discovery period" : "Home feed"}</h2><span>{formatDateTime(new Date(selectedRun.run.ingestedAt), true)} · {Math.round(selectedRun.run.durationSeconds / 60)} min{selectedRun.run.preferenceVersion != null ? ` · preference v${selectedRun.run.preferenceVersion}` : ""}</span></div><button onClick={() => setSelectedRun(null)} aria-label="Close scan detail">×</button></div>
           <div className="run-metrics"><div><b>{selectedRun.run.postsSeen}</b><span>seen</span></div><div><b>{selectedRun.run.postsAdded}</b><span>new</span></div><div><b>{selectedRun.run.duplicates}</b><span>duplicates</span></div><div><b>{selectedRun.run.postsKept}</b><span>kept</span></div><div><b>{selectedRun.run.candidates}</b><span>candidate</span></div><div><b>{selectedRun.run.discarded}</b><span>discarded</span></div></div>
           <div className="run-attachments"><span>{selectedRun.run.mediaCount} media</span><span>{selectedRun.run.linksCount} links</span><span>{selectedRun.run.signalsCount} account signals</span></div>
+          {(selectedRun.acquisitions?.length ?? 0) > 0 && <div className="run-sources">{selectedRun.acquisitions!.map((item) => <div key={item.acquisitionId}><span>{item.topicLabel ? `${item.kind.replaceAll("_", " ")} · ${item.topicLabel}` : item.kind.replaceAll("_", " ")}</span><b>{item.uniqueCount}/{item.plannedQuota}</b></div>)}</div>}
           <div className="run-observations">{selectedRun.observations.map((post, index) => <article key={`${post.postId}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><div><b>{post.author ?? post.handle}</b><small>{post.handle} · {post.decision} · {post.score.toFixed(2)}</small><p>{post.text}</p></div><a href={post.xcancelUrl} target="_blank" rel="noreferrer">↗</a></article>)}</div>
         </section>
       </div>}

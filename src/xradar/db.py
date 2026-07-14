@@ -122,6 +122,61 @@ CREATE TABLE IF NOT EXISTS site_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS preference_versions (
+    version INTEGER PRIMARY KEY,
+    instructions TEXT NOT NULL DEFAULT '',
+    topics_json TEXT NOT NULL DEFAULT '[]',
+    effective_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS topic_state (
+    topic_key TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    normalized_label TEXT NOT NULL UNIQUE,
+    active INTEGER NOT NULL DEFAULT 1,
+    added_at TEXT NOT NULL,
+    last_changed_at TEXT NOT NULL,
+    last_planned_at TEXT,
+    last_searched_at TEXT,
+    query_pack_json TEXT NOT NULL DEFAULT '[]',
+    query_pack_revision INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS topic_account_memory (
+    topic_key TEXT NOT NULL REFERENCES topic_state(topic_key),
+    handle TEXT NOT NULL,
+    relevant_observations INTEGER NOT NULL DEFAULT 0,
+    kept_posts INTEGER NOT NULL DEFAULT 0,
+    score_sum REAL NOT NULL DEFAULT 0,
+    confidence REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'candidate' CHECK(status IN ('candidate','known')),
+    last_observed_at TEXT NOT NULL,
+    last_scanned_at TEXT,
+    PRIMARY KEY(topic_key,handle)
+);
+
+CREATE TABLE IF NOT EXISTS run_acquisitions (
+    acquisition_id TEXT PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    target TEXT NOT NULL,
+    topic_key TEXT,
+    topic_label TEXT,
+    planned_quota INTEGER NOT NULL DEFAULT 0,
+    observed_count INTEGER NOT NULL DEFAULT 0,
+    unique_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'complete',
+    error TEXT,
+    duration_seconds INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS observation_acquisitions (
+    observation_id INTEGER NOT NULL REFERENCES post_observations(id) ON DELETE CASCADE,
+    acquisition_id TEXT NOT NULL REFERENCES run_acquisitions(acquisition_id) ON DELETE CASCADE,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(observation_id,acquisition_id)
+);
 """
 
 
@@ -160,7 +215,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _add_columns(conn, "runs", {
         "scan_id": "TEXT", "source": "TEXT NOT NULL DEFAULT 'x-home'",
         "target": "TEXT", "request_id": "TEXT", "posts_added": "INTEGER NOT NULL DEFAULT 0",
-        "error": "TEXT",
+        "error": "TEXT", "schema_version": "INTEGER NOT NULL DEFAULT 1",
+        "period_id": "TEXT", "preference_version": "INTEGER NOT NULL DEFAULT 0",
+        "target_unique": "INTEGER NOT NULL DEFAULT 100",
+    })
+    _add_columns(conn, "post_observations", {
+        "preference_version": "INTEGER NOT NULL DEFAULT 0",
+        "topic_matches_json": "TEXT NOT NULL DEFAULT '[]'",
     })
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS runs_scan_id_idx ON runs(scan_id)")
     conn.execute("""
@@ -190,6 +251,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         """)
     except sqlite3.OperationalError:
         pass
+    if conn.execute("SELECT count(*) FROM topic_state").fetchone()[0] == 0:
+        preference = conn.execute("SELECT value FROM site_state WHERE key='curator_preferences'").fetchone()
+        if preference:
+            try:
+                snapshot = json.loads(preference["value"])
+                from .planner import apply_preferences
+                apply_preferences(
+                    conn, instructions=snapshot.get("instructions", ""), topics=snapshot.get("topics", []),
+                    version=int(snapshot.get("version") or snapshot.get("preferenceVersion") or 0),
+                    updated_at=snapshot.get("updated_at") or snapshot.get("updatedAt"),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
 
 
 def normalize_handle(handle: str) -> str:
@@ -292,25 +366,62 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
         run_id = int(run["id"])
         added = 0
     else:
+        schema_version = int(payload.get("schema_version") or 1)
+        preference_version = int(payload.get("preference_version") or 0)
+        period_id = str(payload.get("period_id") or scan_id)
+        target_unique = int(payload.get("target_unique") or (150 if source_name == "x-mixed" else 100))
         run_id = conn.execute("""
-            INSERT INTO runs(scan_id,host,source,target,request_id,started_at)
-            VALUES(?,?,?,?,?,?)
+            INSERT INTO runs(
+                scan_id,host,source,target,request_id,started_at,
+                schema_version,period_id,preference_version,target_unique
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
         """, (
             scan_id, payload.get("host", "unknown"), source_name,
             target, payload.get("request_id"), captured_at,
+            schema_version, period_id, preference_version, target_unique,
         )).lastrowid
+        acquisitions = payload.get("acquisitions", [])
+        for acquisition in acquisitions:
+            conn.execute("""
+                INSERT OR IGNORE INTO run_acquisitions(
+                    acquisition_id,run_id,kind,target,topic_key,topic_label,planned_quota,
+                    observed_count,unique_count,status,error,duration_seconds
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                str(acquisition["id"]), run_id, acquisition.get("kind", "unknown"),
+                acquisition.get("url") or acquisition.get("target") or "",
+                acquisition.get("topic_key"), acquisition.get("topic"),
+                int(acquisition.get("quota") or acquisition.get("planned_quota") or 0),
+                int(acquisition.get("observed") or acquisition.get("observed_count") or 0),
+                int(acquisition.get("unique") or acquisition.get("unique_count") or 0),
+                acquisition.get("status", "complete"), acquisition.get("error"),
+                int(acquisition.get("duration_seconds") or 0),
+            ))
         added = 0
         for index, post in enumerate(posts):
             enriched = {**post, "captured_at": post.get("captured_at") or captured_at}
             added += int(upsert_post(conn, enriched))
-            conn.execute("""
+            observation_id = conn.execute("""
                 INSERT OR IGNORE INTO post_observations(
-                    run_id,post_id,captured_at,observed_index,score,decision
-                ) VALUES(?,?,?,?,?,?)
+                    run_id,post_id,captured_at,observed_index,score,decision,
+                    preference_version,topic_matches_json
+                ) VALUES(?,?,?,?,?,?,?,?)
             """, (
                 run_id, str(post["post_id"]), captured_at, index,
                 float(post.get("score", 0)), post.get("decision", "candidate"),
-            ))
+                preference_version, _json(post.get("topic_matches"), []),
+            )).lastrowid
+            if not observation_id:
+                row = conn.execute("SELECT id FROM post_observations WHERE run_id=? AND post_id=?", (run_id, str(post["post_id"]))).fetchone()
+                observation_id = int(row["id"]) if row else None
+            for source_index, discovery in enumerate(post.get("discovery_sources", [])):
+                acquisition_id = str(discovery.get("acquisition_id") or discovery.get("id") or "")
+                if observation_id and acquisition_id:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO observation_acquisitions(observation_id,acquisition_id,is_primary)
+                        VALUES(?,?,?)
+                    """, (observation_id, acquisition_id, int(source_index == 0)))
+            _update_topic_account_memory(conn, post, captured_at)
         for signal in signals:
             add_evidence(
                 conn, handle=signal["handle"],
@@ -330,6 +441,37 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
         "scan_id": scan_id, "posts_seen": len(posts), "posts_added": added,
         "duplicates": len(posts) - added, "signals_seen": len(signals),
     }
+
+
+def _update_topic_account_memory(conn: sqlite3.Connection, post: dict[str, Any], observed_at: str) -> None:
+    handle = normalize_handle(post.get("handle", ""))
+    if handle == "@":
+        return
+    score = float(post.get("score", 0))
+    kept = int(post.get("decision") == "keep")
+    for match in post.get("topic_matches", []):
+        if not isinstance(match, dict) or float(match.get("confidence", 0)) < .65:
+            continue
+        key = str(match.get("topic_key") or "")
+        if not key or not conn.execute("SELECT 1 FROM topic_state WHERE topic_key=?", (key,)).fetchone():
+            continue
+        conn.execute("""
+            INSERT INTO topic_account_memory(
+                topic_key,handle,relevant_observations,kept_posts,score_sum,confidence,status,last_observed_at
+            ) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(topic_key,handle) DO UPDATE SET
+              relevant_observations=topic_account_memory.relevant_observations+1,
+              kept_posts=topic_account_memory.kept_posts+excluded.kept_posts,
+              score_sum=topic_account_memory.score_sum+excluded.score_sum,
+              confidence=MAX(topic_account_memory.confidence,excluded.confidence),
+              last_observed_at=excluded.last_observed_at
+        """, (key, handle, 1, kept, score, float(match.get("confidence", 0)), "candidate", observed_at))
+        row = conn.execute("""
+            SELECT relevant_observations,kept_posts,score_sum FROM topic_account_memory
+            WHERE topic_key=? AND handle=?
+        """, (key, handle)).fetchone()
+        average = float(row["score_sum"]) / max(1, int(row["relevant_observations"]))
+        if int(row["relevant_observations"]) >= 3 and (int(row["kept_posts"]) >= 2 or average >= .65):
+            conn.execute("UPDATE topic_account_memory SET status='known' WHERE topic_key=? AND handle=?", (key, handle))
 
 
 def ensure_account(conn: sqlite3.Connection, handle: str, disposition: str = "normal", *,
