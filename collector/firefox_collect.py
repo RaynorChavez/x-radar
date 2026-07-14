@@ -208,8 +208,11 @@ def collect_target(driver, target: dict, posts: dict[str, dict], captured_at: st
         return result
 
     while result["unique"] < quota and len(posts) < global_target and result["scrolls"] <= max_scrolls and time.monotonic() < per_target_deadline:
-        elements = driver.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]')
-        if not elements:
+        try:
+            elements = WebDriverWait(driver, 30).until(
+                lambda d: d.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]')
+            )
+        except TimeoutException:
             result.update(status="error", error=f"TIMELINE_UNAVAILABLE: no posts appeared at {driver.current_url}")
             break
         before = len(seen_on_target)

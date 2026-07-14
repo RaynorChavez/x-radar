@@ -26,6 +26,18 @@ class FakeDriver:
         return None
 
 
+class DelayedTimelineDriver(FakeDriver):
+    def __init__(self, pages, empty_checks=2):
+        super().__init__(pages)
+        self.empty_checks = empty_checks
+
+    def find_elements(self, _by, selector):
+        if selector == 'article[data-testid="tweet"]' and self.empty_checks:
+            self.empty_checks -= 1
+            return []
+        return super().find_elements(_by, selector)
+
+
 class CollectorContractTests(unittest.TestCase):
     def test_loads_valid_mixed_plan_and_rejects_wrong_budget(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -67,6 +79,23 @@ class CollectorContractTests(unittest.TestCase):
         collect_target(driver, second, posts, "2026-07-14T00:00:00Z", time.monotonic() + 5, 10, 0)
         self.assertEqual({"1", "2"}, set(posts))
         self.assertEqual(["home", "search"], [item["acquisition_id"] for item in posts["1"]["discovery_sources"]])
+
+    def test_waits_for_timeline_hydration_after_authenticated_shell_appears(self):
+        post = {"post_id": "1", "url": "https://x.com/a/status/1", "handle": "@a", "text": "result"}
+        driver = DelayedTimelineDriver({"https://x.com/home": [post]})
+        posts = {}
+        result = collect_target(
+            driver,
+            {"id": "home", "kind": "home", "url": "https://x.com/home", "quota": 1},
+            posts,
+            "2026-07-14T00:00:00Z",
+            time.monotonic() + 5,
+            10,
+            0,
+        )
+        self.assertEqual("complete", result["status"])
+        self.assertEqual(1, result["unique"])
+        self.assertEqual({"1"}, set(posts))
 
 
 if __name__ == "__main__":
