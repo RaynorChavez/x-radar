@@ -1,0 +1,9 @@
+* @RaynorChavez
+/.github/workflows/ @RaynorChavez
+/collector/ @RaynorChavez
+/deploy/ @RaynorChavez
+/site/app/api/ @RaynorChavez
+/site/db/ @RaynorChavez
+/site/drizzle/ @RaynorChavez
+/src/xradar/ @RaynorChavez
+/tools/build_release.py @RaynorChavez
