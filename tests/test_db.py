@@ -306,6 +306,33 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual("x-home", run["source"])
         self.assertEqual("https://x.com/home", run["target"])
 
+    def test_legacy_capture_synthesizes_missing_provenance_parent(self):
+        payload = {
+            "scan_id": "legacy-provenance",
+            "captured_at": "2026-07-14T17:36:08Z",
+            "source": "x-account",
+            "target": "https://x.com/example/with_replies",
+            "collector": {"limit": 100},
+            "posts": [{
+                "post_id": "legacy-provenance-post",
+                "url": "https://x.com/example/status/legacy-provenance-post",
+                "handle": "example",
+                "text": "A complete legacy post",
+                "score": .7,
+                "decision": "keep",
+                "discovery_sources": [{"acquisition_id": "legacy-account", "kind": "account"}],
+            }],
+        }
+
+        result = ingest_capture(self.conn, payload)
+
+        self.assertEqual(1, result["posts_seen"])
+        acquisition = self.conn.execute(
+            "SELECT acquisition_id,kind,target,planned_quota FROM run_acquisitions"
+        ).fetchone()
+        self.assertEqual(("legacy-account", "account", payload["target"], 100), tuple(acquisition))
+        self.assertEqual(1, self.conn.execute("SELECT count(*) FROM observation_acquisitions").fetchone()[0])
+
     def test_pin_implies_save_and_search_uses_local_fts(self):
         upsert_post(self.conn, {"post_id": "paper", "url": "https://x.com/robot/status/paper", "handle": "robot", "author": "Robotics Lab", "text": "orbital manufacturing paper", "decision": "keep"})
         set_post_state(self.conn, "paper", pinned=True)

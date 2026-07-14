@@ -523,6 +523,10 @@ def main() -> int:
                 "collector": {"target": args.target, "scrolls": acquisition["scrolls"], "limit": args.limit,
                               "max_scrolls": args.max_scrolls, "max_minutes": args.max_minutes,
                               "articles_hydrated": articles_hydrated},
+                # Detail hydration preserves each post's discovery source. Keep
+                # the matching acquisition in legacy single-target envelopes so
+                # provenance foreign keys remain valid during ingest.
+                "acquisitions": [acquisition],
                 "posts": list(posts.values()), "account_signals": [],
             }
             summary = {"output": str(output), "observed": len(posts), "scrolls": acquisition["scrolls"], "target": args.target}

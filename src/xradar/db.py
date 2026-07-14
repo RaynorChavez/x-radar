@@ -496,7 +496,30 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
             target, payload.get("request_id"), captured_at,
             schema_version, period_id, preference_version, target_unique,
         )).lastrowid
-        acquisitions = payload.get("acquisitions", [])
+        acquisitions = list(payload.get("acquisitions") or [])
+        acquisition_ids = {
+            str(item.get("id") or item.get("acquisition_id") or "")
+            for item in acquisitions
+        }
+        # Version-1 single-target captures did not have an envelope-level
+        # acquisitions array. Newer collectors may still annotate their posts
+        # with discovery provenance, so synthesize the missing parent records
+        # rather than rejecting an otherwise valid legacy capture.
+        for post in posts:
+            for discovery in post.get("discovery_sources", []):
+                acquisition_id = str(discovery.get("acquisition_id") or discovery.get("id") or "")
+                if not acquisition_id or acquisition_id in acquisition_ids:
+                    continue
+                acquisitions.append({
+                    "id": acquisition_id,
+                    "kind": discovery.get("kind") or ("account" if source_name == "x-account" else "home"),
+                    "url": discovery.get("url") or discovery.get("target") or target or "",
+                    "quota": payload.get("collector", {}).get("limit") or len(posts),
+                    "observed": len(posts),
+                    "unique": len(posts),
+                    "status": "complete",
+                })
+                acquisition_ids.add(acquisition_id)
         for acquisition in acquisitions:
             conn.execute("""
                 INSERT OR IGNORE INTO run_acquisitions(
