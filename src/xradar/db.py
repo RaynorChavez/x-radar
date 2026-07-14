@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import shutil
 import sqlite3
 import uuid
@@ -11,6 +12,13 @@ from typing import Any, Iterable
 
 
 DISPOSITIONS = {"allow", "normal", "watch", "downrank", "blocked"}
+SCORE_WEIGHTS = {
+    "novelty": 0.30,
+    "evidence": 0.25,
+    "relevance": 0.20,
+    "density": 0.15,
+    "importance": 0.10,
+}
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -38,7 +46,8 @@ CREATE TABLE IF NOT EXISTS posts (
     engagement_json TEXT NOT NULL DEFAULT '{}',
     score REAL NOT NULL DEFAULT 0,
     decision TEXT NOT NULL DEFAULT 'candidate',
-    reasons_json TEXT NOT NULL DEFAULT '[]'
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    score_components_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS account_reputation (
@@ -90,6 +99,7 @@ CREATE TABLE IF NOT EXISTS post_observations (
     observed_index INTEGER NOT NULL DEFAULT 0,
     score REAL NOT NULL DEFAULT 0,
     decision TEXT NOT NULL DEFAULT 'candidate',
+    score_components_json TEXT,
     UNIQUE(run_id, post_id)
 );
 CREATE INDEX IF NOT EXISTS observations_post_idx
@@ -177,6 +187,17 @@ CREATE TABLE IF NOT EXISTS observation_acquisitions (
     is_primary INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(observation_id,acquisition_id)
 );
+
+CREATE TABLE IF NOT EXISTS post_embeddings (
+    post_id TEXT PRIMARY KEY REFERENCES posts(post_id) ON DELETE CASCADE,
+    model_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    dimensions INTEGER NOT NULL,
+    embedded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS post_embeddings_model_idx
+    ON post_embeddings(model_id, embedded_at);
 """
 
 
@@ -211,6 +232,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "xcancel_url": "TEXT", "external_links_json": "TEXT NOT NULL DEFAULT '[]'",
         "media_json": "TEXT NOT NULL DEFAULT '[]'", "article_json": "TEXT",
         "profile_image_url": "TEXT", "first_seen_at": "TEXT", "last_seen_at": "TEXT",
+        "score_components_json": "TEXT",
     })
     _add_columns(conn, "runs", {
         "scan_id": "TEXT", "source": "TEXT NOT NULL DEFAULT 'x-home'",
@@ -222,6 +244,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _add_columns(conn, "post_observations", {
         "preference_version": "INTEGER NOT NULL DEFAULT 0",
         "topic_matches_json": "TEXT NOT NULL DEFAULT '[]'",
+        "score_components_json": "TEXT",
     })
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS runs_scan_id_idx ON runs(scan_id)")
     conn.execute("""
@@ -281,20 +304,111 @@ def _json(value: Any, default: Any) -> str:
     return json.dumps(default if value is None else value, sort_keys=True)
 
 
+def normalize_score_components(value: Any) -> tuple[dict[str, Any] | None, float | None]:
+    """Validate Luna's auditable rubric and deterministically calculate its final score."""
+    if value is None:
+        return None, None
+    if not isinstance(value, dict):
+        raise ValueError("score_components must be an object")
+    normalized: dict[str, Any] = {}
+    weighted_total = 0.0
+    for name, weight in SCORE_WEIGHTS.items():
+        component = value.get(name)
+        if not isinstance(component, dict):
+            raise ValueError(f"score_components.{name} must be an object")
+        raw_score = component.get("score")
+        if isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)):
+            raise ValueError(f"score_components.{name}.score must be a number")
+        score = float(raw_score)
+        if not math.isfinite(score) or score < 0 or score > 1:
+            raise ValueError(f"score_components.{name}.score must be between 0 and 1")
+        rationale = str(component.get("rationale") or "").strip()
+        if not rationale or len(rationale) > 280:
+            raise ValueError(f"score_components.{name}.rationale must be 1-280 characters")
+        normalized[name] = {"score": round(score, 4), "weight": weight, "rationale": rationale}
+        weighted_total += score * weight
+    penalties: list[dict[str, Any]] = []
+    penalty_total = 0.0
+    raw_penalties = value.get("penalties", [])
+    if not isinstance(raw_penalties, list) or len(raw_penalties) > 8:
+        raise ValueError("score_components.penalties must be an array of at most 8 items")
+    for penalty in raw_penalties:
+        if not isinstance(penalty, dict):
+            raise ValueError("each score penalty must be an object")
+        kind = str(penalty.get("kind") or "").strip()
+        rationale = str(penalty.get("rationale") or "").strip()
+        raw_amount = penalty.get("amount")
+        if not kind or len(kind) > 64 or not rationale or len(rationale) > 280:
+            raise ValueError("score penalty kind and rationale are required")
+        if isinstance(raw_amount, bool) or not isinstance(raw_amount, (int, float)):
+            raise ValueError("score penalty amount must be a number")
+        amount = float(raw_amount)
+        if not math.isfinite(amount) or amount < 0 or amount > 1:
+            raise ValueError("score penalty amount must be between 0 and 1")
+        penalties.append({"kind": kind, "amount": round(amount, 4), "rationale": rationale})
+        penalty_total += amount
+    final_score = max(0.0, min(1.0, weighted_total - penalty_total))
+    normalized.update({
+        "penalties": penalties,
+        "weighted_total": round(weighted_total, 4),
+        "penalty_total": round(penalty_total, 4),
+        "final_score": round(final_score, 4),
+    })
+    return normalized, round(final_score, 4)
+
+
+def normalize_ranked_post(post: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(post)
+    raw_components = post.get("score_components")
+    topic_matches = post.get("topic_matches")
+    if isinstance(raw_components, dict) and isinstance(topic_matches, list):
+        confidences = [
+            float(match["confidence"])
+            for match in topic_matches
+            if isinstance(match, dict)
+            and isinstance(match.get("confidence"), (int, float))
+            and not isinstance(match.get("confidence"), bool)
+            and math.isfinite(float(match["confidence"]))
+            and 0 <= float(match["confidence"]) <= 1
+        ]
+        relevance = raw_components.get("relevance")
+        if confidences and isinstance(relevance, dict):
+            strongest = max(confidences)
+            current = relevance.get("score")
+            if isinstance(current, (int, float)) and not isinstance(current, bool) and strongest > float(current):
+                raw_components = dict(raw_components)
+                relevance = dict(relevance)
+                relevance["score"] = round(strongest, 4)
+                rationale = str(relevance.get("rationale") or "").strip()
+                relevance["rationale"] = (
+                    f"{rationale} Direct active-topic match calibrates relevance to {strongest:.2f}."
+                ).strip()[:280]
+                raw_components["relevance"] = relevance
+    components, final_score = normalize_score_components(raw_components)
+    if components is not None:
+        normalized["score_components"] = components
+        normalized["score"] = final_score
+    return normalized
+
+
 def upsert_post(conn: sqlite3.Connection, post: dict[str, Any]) -> bool:
+    post = normalize_ranked_post(post)
     post_id = str(post["post_id"])
     existed = conn.execute("SELECT 1 FROM posts WHERE post_id=?", (post_id,)).fetchone() is not None
     captured_at = post.get("captured_at") or utcnow()
     article = post.get("article")
     article_id = str(article["id"]) if isinstance(article, dict) and article.get("id") else None
-    mirror_url = post.get("xcancel_url") or xcancel_url(post["handle"], post_id, article_id)
+    mirror_url = (
+        xcancel_url(post["handle"], post_id, article_id)
+        if article_id else post.get("xcancel_url") or xcancel_url(post["handle"], post_id)
+    )
     conn.execute("""
         INSERT INTO posts (
             post_id, url, handle, author, profile_image_url, text, posted_at, captured_at,
             first_seen_at, last_seen_at, is_ad, is_reply, is_quote, source_url, xcancel_url,
             external_links_json, media_json, article_json, engagement_json,
-            score, decision, reasons_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            score, decision, reasons_json, score_components_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(post_id) DO UPDATE SET
             url=excluded.url, handle=excluded.handle,
             author=COALESCE(excluded.author, posts.author),
@@ -311,7 +425,8 @@ def upsert_post(conn: sqlite3.Connection, post: dict[str, Any]) -> bool:
                 THEN excluded.media_json ELSE posts.media_json END,
             article_json=COALESCE(excluded.article_json, posts.article_json),
             engagement_json=excluded.engagement_json,
-            score=excluded.score, decision=excluded.decision, reasons_json=excluded.reasons_json
+            score=excluded.score, decision=excluded.decision, reasons_json=excluded.reasons_json,
+            score_components_json=COALESCE(excluded.score_components_json, posts.score_components_json)
     """, (
         post_id, post["url"], normalize_handle(post["handle"]), post.get("author"),
         post.get("profile_image_url"), post.get("text", ""), post.get("posted_at"), captured_at,
@@ -321,6 +436,7 @@ def upsert_post(conn: sqlite3.Connection, post: dict[str, Any]) -> bool:
         _json(article, {}) if article else None, _json(post.get("engagement"), {}),
         float(post.get("score", 0)), post.get("decision", "candidate"),
         _json(post.get("reasons"), []),
+        _json(post.get("score_components"), {}) if post.get("score_components") else None,
     ))
     try:
         conn.execute("DELETE FROM posts_fts WHERE post_id=?", (post_id,))
@@ -359,7 +475,7 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
     source_name = (
         "x-account" if target and "/with_replies" in str(target) else "x-home"
     ) if isinstance(source_value, dict) else str(source_value)
-    posts = payload.get("posts", [])
+    posts = [normalize_ranked_post(post) for post in payload.get("posts", [])]
     signals = payload.get("account_signals", [])
     run = conn.execute("SELECT id FROM runs WHERE scan_id=?", (scan_id,)).fetchone()
     if run:
@@ -404,12 +520,13 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
             observation_id = conn.execute("""
                 INSERT OR IGNORE INTO post_observations(
                     run_id,post_id,captured_at,observed_index,score,decision,
-                    preference_version,topic_matches_json
-                ) VALUES(?,?,?,?,?,?,?,?)
+                    preference_version,topic_matches_json,score_components_json
+                ) VALUES(?,?,?,?,?,?,?,?,?)
             """, (
                 run_id, str(post["post_id"]), captured_at, index,
                 float(post.get("score", 0)), post.get("decision", "candidate"),
                 preference_version, _json(post.get("topic_matches"), []),
+                _json(post.get("score_components"), {}) if post.get("score_components") else None,
             )).lastrowid
             if not observation_id:
                 row = conn.execute("SELECT id FROM post_observations WHERE run_id=? AND post_id=?", (run_id, str(post["post_id"]))).fetchone()
@@ -435,7 +552,7 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
             WHERE id=?
         """, (utcnow(), len(posts), kept, added, run_id))
         event = {**payload, "scan_id": scan_id, "captured_at": captured_at,
-                 "source": source_name, "target": target}
+                 "source": source_name, "target": target, "posts": posts}
         enqueue(conn, f"capture:{scan_id}", "capture", event)
     return {
         "scan_id": scan_id, "posts_seen": len(posts), "posts_added": added,
@@ -626,6 +743,7 @@ def _decode_post(row: sqlite3.Row) -> dict[str, Any]:
     for key, target, default in (
         ("engagement_json", "engagement", {}), ("reasons_json", "reasons", []),
         ("external_links_json", "external_links", []), ("media_json", "media", []),
+        ("score_components_json", "score_components", None),
     ):
         if key in item:
             raw = item.pop(key)

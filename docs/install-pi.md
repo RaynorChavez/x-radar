@@ -11,7 +11,7 @@ Clone the repository as `~/x-radar`, then install Python dependencies:
 cd ~/x-radar
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e '.[collector]'
+pip install -e '.[collector,semantic]'
 cp .env.example .env
 ```
 
@@ -20,6 +20,14 @@ bypass token, and a non-identifying host label in `.env`.
 
 Install Firefox, geckodriver, and the Codex CLI through their official
 installation channels. Run `bin/doctor` before installing services.
+
+Copy or download the BGE ONNX model and tokenizer into an X Radar-owned model
+directory. Run `bin/embed-pending` to create the incremental local index. For
+public remote search, run `bin/semantic-server` on loopback and expose only its
+path through Tailscale Funnel; configure a 32-byte-or-longer HMAC secret on both
+the service and Sites. Never expose SQLite or the model directory.
+User-service installations can enable the indexer and server with
+`bin/install-semantic-services` after those settings exist.
 
 ## 2. Authenticate X manually
 

@@ -19,7 +19,8 @@ export async function ensureRadarDb() {
       xcancel_url TEXT, external_links_json TEXT NOT NULL DEFAULT '[]',
       media_json TEXT NOT NULL DEFAULT '[]', article_json TEXT,
       engagement_json TEXT NOT NULL DEFAULT '{}', score REAL NOT NULL DEFAULT 0,
-      decision TEXT NOT NULL DEFAULT 'candidate', reasons_json TEXT NOT NULL DEFAULT '[]'
+      decision TEXT NOT NULL DEFAULT 'candidate', reasons_json TEXT NOT NULL DEFAULT '[]',
+      score_components_json TEXT
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS posts_captured_idx ON posts(captured_at)"),
     db.prepare("CREATE INDEX IF NOT EXISTS posts_decision_idx ON posts(decision)"),
@@ -64,7 +65,8 @@ export async function ensureRadarDb() {
       id TEXT PRIMARY KEY, scan_id TEXT NOT NULL, post_id TEXT NOT NULL, captured_at TEXT NOT NULL,
       observed_index INTEGER NOT NULL DEFAULT 0, score REAL NOT NULL DEFAULT 0,
       decision TEXT NOT NULL DEFAULT 'candidate', is_ad INTEGER NOT NULL DEFAULT 0,
-      is_reply INTEGER NOT NULL DEFAULT 0, is_quote INTEGER NOT NULL DEFAULT 0
+      is_reply INTEGER NOT NULL DEFAULT 0, is_quote INTEGER NOT NULL DEFAULT 0,
+      score_components_json TEXT
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS observations_captured_idx ON post_observations(captured_at, observed_index)"),
     db.prepare("CREATE INDEX IF NOT EXISTS observations_post_idx ON post_observations(post_id)"),
@@ -108,6 +110,7 @@ export async function ensureRadarDb() {
     ["profile_image_url", "TEXT"],
     ["first_seen_at", "TEXT"],
     ["last_seen_at", "TEXT"],
+    ["score_components_json", "TEXT"],
   ];
   for (const [name, definition] of additions) {
     if (!existing.has(name)) await db.prepare(`ALTER TABLE posts ADD COLUMN ${name} ${definition}`).run();
@@ -119,6 +122,7 @@ export async function ensureRadarDb() {
   }
   if (!observationExisting.has("preference_version")) await db.prepare("ALTER TABLE post_observations ADD COLUMN preference_version INTEGER NOT NULL DEFAULT 0").run();
   if (!observationExisting.has("topic_matches_json")) await db.prepare("ALTER TABLE post_observations ADD COLUMN topic_matches_json TEXT NOT NULL DEFAULT '[]'").run();
+  if (!observationExisting.has("score_components_json")) await db.prepare("ALTER TABLE post_observations ADD COLUMN score_components_json TEXT").run();
   const accountColumns = await db.prepare("PRAGMA table_info(account_reputation)").all<{ name: string }>();
   const accountExisting = new Set(accountColumns.results.map((column) => column.name));
   if (!accountExisting.has("notes")) await db.prepare("ALTER TABLE account_reputation ADD COLUMN notes TEXT").run();

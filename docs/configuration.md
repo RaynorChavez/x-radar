@@ -12,6 +12,10 @@ X Radar has one codebase and two runtime modes.
 | `XRADAR_ACQUISITION_MODE` | `mixed` normally; `legacy` for rollback | same |
 | `XRADAR_GECKODRIVER` | optional absolute geckodriver path for a dedicated service user | usually omit |
 | `XRADAR_FIREFOX` | optional absolute Firefox binary path | usually omit |
+| `XRADAR_SEMANTIC_PYTHON` | Python from the isolated semantic environment | same environment Python |
+| `XRADAR_EMBEDDING_MODEL_DIR` | private host model directory | local model directory |
+| `XRADAR_SEMANTIC_HMAC_KEYS` | JSON key-id to secret map; required for Funnel | omit only with explicit local mode |
+| `XRADAR_SEMANTIC_LOCAL_MODE` | unset | `1` when the service is loopback-only |
 
 Generate an ingest token with a cryptographically secure password generator.
 Never store the real value in Git. In split mode, add it to the Sites runtime
@@ -29,3 +33,8 @@ Mixed acquisition targets 150 unique posts per period across Home, active-topic
 search, known topic accounts, and bounded exploration. Setting
 `XRADAR_ACQUISITION_MODE=legacy` restores the earlier single-target 100-post
 Home behavior without changing or deleting topic memory.
+
+The Sites runtime additionally holds `XRADAR_SEMANTIC_UPSTREAM_URL`,
+`XRADAR_SEMANTIC_HMAC_ACTIVE_KEY_ID`, and the matching
+`XRADAR_SEMANTIC_HMAC_KEYS`. These are server-only values. Use a different HMAC
+secret from the ingest token and rotate by temporarily retaining both key IDs.

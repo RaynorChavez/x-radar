@@ -10,6 +10,7 @@ from xradar.db import (
     connect,
     export_feed,
     ingest_capture,
+    normalize_score_components,
     purge_account,
     search_posts,
     seed_blocklist,
@@ -42,6 +43,71 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(upsert_post(self.conn, post))
         self.assertFalse(upsert_post(self.conn, post))
 
+    def test_score_breakdown_is_validated_recalculated_and_stored_per_observation(self):
+        components = {
+            "novelty": {"score": .9, "rationale": "New result."},
+            "evidence": {"score": .8, "rationale": "Links the paper."},
+            "relevance": {"score": .7, "rationale": "Matches robotics."},
+            "density": {"score": .6, "rationale": "Includes method and result."},
+            "importance": {"score": .5, "rationale": "May affect deployment."},
+            "penalties": [{"kind": "unsupported_certainty", "amount": .05, "rationale": "One extrapolation is unsupported."}],
+        }
+        normalized, score = normalize_score_components(components)
+        self.assertAlmostEqual(.70, score)
+        self.assertEqual(.30, normalized["novelty"]["weight"])
+        ingest_capture(self.conn, {
+            "scan_id": "scored", "captured_at": "2026-07-15T00:00:00Z", "host": "test",
+            "posts": [{
+                "post_id": "scored-post", "url": "https://x.com/lab/status/scored-post",
+                "handle": "lab", "text": "A result", "score": .99, "decision": "keep",
+                "score_components": components,
+            }],
+        })
+        post = self.conn.execute("SELECT score,score_components_json FROM posts WHERE post_id='scored-post'").fetchone()
+        observation = self.conn.execute("SELECT score,score_components_json FROM post_observations").fetchone()
+        self.assertAlmostEqual(.70, post["score"])
+        self.assertAlmostEqual(.70, observation["score"])
+        self.assertEqual("New result.", json.loads(observation["score_components_json"])["novelty"]["rationale"])
+        queued = json.loads(self.conn.execute("SELECT payload_json FROM sync_outbox").fetchone()["payload_json"])
+        self.assertAlmostEqual(.70, queued["posts"][0]["score"])
+
+    def test_incomplete_score_breakdown_is_rejected_but_legacy_capture_remains_valid(self):
+        with self.assertRaisesRegex(ValueError, "evidence"):
+            normalize_score_components({"novelty": {"score": .5, "rationale": "New."}})
+        ingest_capture(self.conn, {
+            "scan_id": "legacy-score", "posts": [{
+                "post_id": "legacy-score", "url": "https://x.com/a/status/legacy-score",
+                "handle": "a", "text": "legacy", "score": .4,
+            }],
+        })
+        self.assertIsNone(self.conn.execute("SELECT score_components_json FROM posts").fetchone()[0])
+
+    def test_direct_topic_match_calibrates_only_the_relevance_component(self):
+        components = {
+            "novelty": {"score": .6, "rationale": "New policy proposal."},
+            "evidence": {"score": .7, "rationale": "Primary source for the author's position."},
+            "relevance": {"score": .4, "rationale": "Discusses AI."},
+            "density": {"score": .7, "rationale": "Contains a concrete framework."},
+            "importance": {"score": .8, "rationale": "Could influence frontier AI governance."},
+            "penalties": [],
+        }
+        ingest_capture(self.conn, {
+            "scan_id": "topic-calibration", "captured_at": "2026-07-15T00:00:00Z", "host": "test",
+            "posts": [{
+                "post_id": "topic-post", "url": "https://x.com/lab/status/topic-post",
+                "handle": "lab", "text": "A frontier AI standards framework", "decision": "keep",
+                "topic_matches": [{"topic_key": "ai", "topic": "AI research", "confidence": .95}],
+                "score_components": components,
+            }],
+        })
+        row = self.conn.execute(
+            "SELECT score,score_components_json FROM posts WHERE post_id='topic-post'"
+        ).fetchone()
+        stored = json.loads(row["score_components_json"])
+        self.assertAlmostEqual(.95, stored["relevance"]["score"])
+        self.assertIn("Direct active-topic match", stored["relevance"]["rationale"])
+        self.assertAlmostEqual(.73, row["score"])
+
     def test_duplicate_capture_can_refresh_profile_image(self):
         post = {
             "post_id": "avatar-1", "url": "https://x.com/alice/status/avatar-1",
@@ -62,6 +128,7 @@ class DatabaseTests(unittest.TestCase):
             "url": "https://x.com/researcher/status/2076422557180608888",
             "handle": "researcher",
             "text": "A long-form research note.",
+            "xcancel_url": "https://xcancel.com/researcher/status/2076422557180608888",
             "score": 0.9,
             "decision": "keep",
             "external_links": [{"url": "https://example.org/paper", "title": "Paper"}],

@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh x-radar semantic index
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=10m
+Persistent=true
+RandomizedDelaySec=45s
+Unit=x-radar-embed.service
+
+[Install]
+WantedBy=timers.target

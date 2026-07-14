@@ -8,8 +8,10 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from selenium import webdriver
 from selenium.common.exceptions import JavascriptException, StaleElementReferenceException, TimeoutException
@@ -98,8 +100,8 @@ const articleContent = text('[data-testid="twitterArticleRichTextView"]')
   || text('[data-testid="longformRichTextComponent"]');
 const articleExcerpt = articleContent.slice(0, 1200);
 const articleUrl = legacyArticleAnchor?.href || (articleId ? `https://x.com/${rawHandle}/article/${articleId}` : null);
-const articleXcancelUrl = legacyArticleMatch
-  ? `https://xcancel.com/i/article/${legacyArticleMatch[1]}`
+const articleXcancelUrl = articleId
+  ? `https://xcancel.com/i/article/${articleId}`
   : `https://xcancel.com/${rawHandle}/status/${postId}`;
 const article = articleId ? {
   id: articleId, url: articleUrl, xcancelUrl: articleXcancelUrl,
@@ -179,6 +181,100 @@ def validate_post_detail_target(value: str, expected_post_id: str) -> str:
     if not valid_handle or parts[1] != "status" or not parts[2].isdigit() or parts[2] != str(expected_post_id):
         raise ValueError("article hydration target must match its captured post ID")
     return f"https://x.com/{parts[0]}/status/{parts[2]}"
+
+
+def validate_xcancel_article_target(article_id: str) -> str:
+    value = str(article_id)
+    if not value.isdigit():
+        raise ValueError("XCancel article IDs must be numeric")
+    return f"https://xcancel.com/i/article/{value}"
+
+
+class _XCancelArticleParser(HTMLParser):
+    """Extract inert long-form text from the one allowlisted XCancel article page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.article_depth = 0
+        self.ignore_depth = 0
+        self.capture_tag: str | None = None
+        self.capture_depth = 0
+        self.buffer: list[str] = []
+        self.title = ""
+        self.blocks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        if tag == "article" and "article-body" in classes:
+            self.article_depth = 1
+            return
+        if not self.article_depth:
+            return
+        self.article_depth += 1
+        if self.ignore_depth:
+            return
+        if "article-author" in classes:
+            self.ignore_depth = self.article_depth
+            return
+        if self.capture_tag is None and tag in {"h1", "h2", "h3", "p", "li", "blockquote"}:
+            self.capture_tag = tag
+            self.capture_depth = self.article_depth
+            self.buffer = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.article_depth:
+            return
+        if self.ignore_depth:
+            if self.article_depth == self.ignore_depth:
+                self.ignore_depth = 0
+            self.article_depth -= 1
+            return
+        if self.capture_tag == tag and self.capture_depth == self.article_depth:
+            value = " ".join("".join(self.buffer).split())
+            if value:
+                if tag == "h1" and not self.title:
+                    self.title = value
+                elif tag != "h1":
+                    self.blocks.append(value)
+            self.capture_tag = None
+            self.capture_depth = 0
+            self.buffer = []
+        self.article_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self.article_depth and self.capture_tag is not None:
+            self.buffer.append(data)
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        raise ValueError("XCancel article fallback redirects are not allowed")
+
+
+def fetch_xcancel_article(article_id: str, timeout: float = 15.0) -> dict[str, str] | None:
+    """Bounded fallback used only when X did not expose a captured article body."""
+    target = validate_xcancel_article_target(article_id)
+    request = Request(target, headers={
+        "Accept": "text/html,application/xhtml+xml",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0",
+    })
+    with build_opener(_RejectRedirects).open(request, timeout=timeout) as response:
+        final = urlparse(response.geturl())
+        if final.scheme != "https" or final.hostname != "xcancel.com" or final.path != f"/i/article/{article_id}":
+            raise ValueError("XCancel article fallback redirected outside its allowlisted article")
+        raw = response.read(262145)
+        if len(raw) > 262144:
+            raise ValueError("XCancel article fallback exceeded 256 KiB")
+        content_type = response.headers.get_content_type()
+        if content_type not in {"text/html", "application/xhtml+xml"}:
+            raise ValueError("XCancel article fallback returned a non-HTML document")
+    parser = _XCancelArticleParser()
+    parser.feed(raw.decode("utf-8", errors="replace"))
+    content = "\n\n".join(parser.blocks).strip()
+    if not parser.title or not content:
+        return None
+    return {"title": parser.title[:500], "content": content[:12000]}
 
 
 def legacy_kind(value: str) -> str:
@@ -308,13 +404,13 @@ def hydrate_longform_articles(driver, posts: dict[str, dict], captured_at: str,
         remaining = global_deadline - time.monotonic()
         if remaining <= 1:
             break
+        enriched = None
         try:
             url = validate_post_detail_target(str(post["url"]), str(post["post_id"]))
             driver.get(url)
             elements = WebDriverWait(driver, min(30, max(1, remaining))).until(
                 lambda d: d.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]')
             )
-            enriched = None
             for element in elements:
                 try:
                     candidate = driver.execute_script(EXTRACT_POST, element, captured_at)
@@ -323,15 +419,35 @@ def hydrate_longform_articles(driver, posts: dict[str, dict], captured_at: str,
                 if candidate and str(candidate.get("post_id")) == str(post["post_id"]):
                     enriched = candidate
                     break
-            if not enriched or not (enriched.get("article") or {}).get("content"):
-                continue
+        except (TimeoutException, ValueError):
+            pass
+        if enriched and (enriched.get("article") or {}).get("content"):
             discovery_sources = post.get("discovery_sources", [])
             post.update(enriched)
             post["discovery_sources"] = discovery_sources
             post.pop("_needs_article_hydration", None)
             hydrated += 1
-        except (TimeoutException, ValueError):
             continue
+
+        article = post.get("article") if isinstance(post.get("article"), dict) else {}
+        article_id = str(article.get("id") or "")
+        if not article_id or global_deadline - time.monotonic() <= 1:
+            continue
+        try:
+            fallback = fetch_xcancel_article(article_id, timeout=min(15, max(1, global_deadline - time.monotonic())))
+        except (OSError, TimeoutError, ValueError):
+            fallback = None
+        if fallback:
+            article.update({
+                "title": fallback["title"],
+                "content": fallback["content"],
+                "description": fallback["content"][:500],
+                "xcancelUrl": validate_xcancel_article_target(article_id),
+            })
+            post["article"] = article
+            if not post.get("text"):
+                post["text"] = f'{fallback["title"]}\n\n{fallback["content"][:1200]}'
+            hydrated += 1
     return hydrated
 
 

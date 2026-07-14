@@ -22,6 +22,8 @@ RUNTIME_FILES = (
     "bin/collect-once",
     "bin/dispatch-queued",
     "bin/doctor",
+    "bin/embed-pending",
+    "bin/semantic-server",
     "bin/sync",
     "collector/firefox_collect.py",
     "config/blocklist.example.json",

@@ -1,0 +1,11 @@
+[Unit]
+Description=Index new x-radar posts for semantic search
+After=x-radar.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/x-radar
+ExecStart=%h/x-radar/bin/embed-pending
+EnvironmentFile=%h/x-radar/.env
+Environment=HOME=%h
+Nice=12

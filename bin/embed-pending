@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+PYTHON="${XRADAR_SEMANTIC_PYTHON:-python3}"
+exec "$PYTHON" -m xradar.semantic --db "${XRADAR_DATABASE:-var/x-radar.sqlite}" index

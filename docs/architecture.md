@@ -35,6 +35,12 @@ query packs and applies the ranking rubric conservatively. The raw envelope is
 untrusted input, and Luna may add evidence for observable bait patterns but
 cannot create a hard block or navigate an account that was not first observed.
 
+Luna emits an auditable five-part score breakdown for every new observation.
+SQLite and D1 store the component scores, rationales, and penalties alongside
+the final score. The host recalculates the final value from fixed weights so a
+displayed total cannot drift from its breakdown; historical observations are
+never rewritten.
+
 ## Synchronization
 
 Ingesting a local capture commits the run, posts, observations, evidence, and an outbox event in one SQLite transaction. A separate ten-minute timer sends due events. Failed events back off after approximately 1, 5, 15, and 60 minutes, then retry hourly until successful.
@@ -47,7 +53,11 @@ Dashboard mutations are append-only records with a numeric cursor. The Pi pulls 
 - **Signal:** retained posts across day/week/month/year/all-time lenses.
 - **Saved:** saved posts with pinned items first.
 - **All seen:** the complete observation ledger, including candidates, discards, replies, quotes, and promoted posts.
-- **Search:** D1 FTS5 over post text, author, and handle, with an account filter.
+- **Search:** D1 FTS5 provides exact-word search. Optional semantic search is
+  served from the collector host: an incremental local BGE index stores one
+  normalized vector per unique post, while Sites sends bounded HMAC-signed
+  requests through a path-scoped Tailscale Funnel route. The browser never
+  receives the model, Funnel URL, or HMAC secret.
 
 ## Reliability target
 
