@@ -46,6 +46,25 @@ function xcancelFor(post: CapturePost) {
   return `https://xcancel.com/${post.handle.replace(/^@/, "").toLowerCase()}/status/${post.post_id}`;
 }
 
+function contentTier(post: Pick<CapturePost, "text" | "article" | "external_links" | "media">) {
+  if (typeof post.article?.content === "string" && post.article.content.trim()) return 3;
+  if (post.text?.trim()) return 2;
+  if (post.external_links?.length || post.media?.length) return 1;
+  return 0;
+}
+
+function storedContentTier(row: {
+  text?: string | null; article_json?: string | null; external_links_json?: string | null; media_json?: string | null;
+}) {
+  let article: CapturePost["article"] = null;
+  let externalLinks: CapturePost["external_links"] = [];
+  let media: CapturePost["media"] = [];
+  try { article = row.article_json ? JSON.parse(row.article_json) : null; } catch { article = null; }
+  try { externalLinks = row.external_links_json ? JSON.parse(row.external_links_json) : []; } catch { externalLinks = []; }
+  try { media = row.media_json ? JSON.parse(row.media_json) : []; } catch { media = []; }
+  return contentTier({ text: row.text ?? "", article, external_links: externalLinks, media });
+}
+
 export async function POST(request: Request) {
   if (!collectorAuthorized(request)) return Response.json({ error: "Unauthorized" }, { status: 401 });
   try {
@@ -78,7 +97,17 @@ async function ingest(request: Request) {
   const existingRun = await db.prepare("SELECT scan_id FROM runs WHERE scan_id=?").bind(scanId).first();
   if (existingRun) return Response.json({ scanId, duplicate: true, postsReceived: 0 });
   const existingPosts = await countExistingPosts(db, posts.map((post) => post.post_id));
-  if (posts.length) await batchInChunks(db, posts.map((post) => db.prepare(`
+  const existingContent = new Map<string, number>();
+  for (let start = 0; start < posts.length; start += 50) {
+    const ids = posts.slice(start, start + 50).map((post) => post.post_id);
+    if (!ids.length) continue;
+    const rows = await db.prepare(`SELECT post_id,text,article_json,external_links_json,media_json FROM posts WHERE post_id IN (${ids.map(() => "?").join(",")})`)
+      .bind(...ids).all<{ post_id: string; text: string | null; article_json: string | null; external_links_json: string | null; media_json: string | null }>();
+    for (const row of rows.results) existingContent.set(row.post_id, storedContentTier(row));
+  }
+  if (posts.length) await batchInChunks(db, posts.map((post) => {
+    const promoteCanonical = !existingContent.has(post.post_id) || contentTier(post) >= (existingContent.get(post.post_id) ?? 0);
+    return db.prepare(`
     INSERT INTO posts (
       post_id, url, handle, author, profile_image_url, text, posted_at, captured_at,
       first_seen_at, last_seen_at, is_ad, is_reply, is_quote,
@@ -87,13 +116,18 @@ async function ingest(request: Request) {
       , score_components_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(post_id) DO UPDATE SET
-      text=excluded.text, profile_image_url=COALESCE(excluded.profile_image_url, posts.profile_image_url),
+      text=CASE WHEN excluded.text != '' THEN excluded.text ELSE posts.text END,
+      profile_image_url=COALESCE(excluded.profile_image_url, posts.profile_image_url),
       xcancel_url=excluded.xcancel_url,
-      external_links_json=excluded.external_links_json, media_json=excluded.media_json,
-      article_json=excluded.article_json, engagement_json=excluded.engagement_json,
-      score=excluded.score, decision=excluded.decision, reasons_json=excluded.reasons_json,
-      score_components_json=COALESCE(excluded.score_components_json, posts.score_components_json),
-      captured_at=excluded.captured_at, last_seen_at=excluded.last_seen_at
+      external_links_json=CASE WHEN excluded.external_links_json != '[]' THEN excluded.external_links_json ELSE posts.external_links_json END,
+      media_json=CASE WHEN excluded.media_json != '[]' THEN excluded.media_json ELSE posts.media_json END,
+      article_json=COALESCE(excluded.article_json, posts.article_json), engagement_json=excluded.engagement_json,
+      score=${promoteCanonical ? "excluded.score" : "posts.score"},
+      decision=${promoteCanonical ? "excluded.decision" : "posts.decision"},
+      reasons_json=${promoteCanonical ? "excluded.reasons_json" : "posts.reasons_json"},
+      score_components_json=${promoteCanonical ? "COALESCE(excluded.score_components_json, posts.score_components_json)" : "posts.score_components_json"},
+      captured_at=${promoteCanonical ? "excluded.captured_at" : "posts.captured_at"},
+      last_seen_at=excluded.last_seen_at
   `).bind(
     post.post_id, post.url, post.handle.toLowerCase(), post.author ?? null,
     post.profile_image_url ?? null, post.text,
@@ -104,7 +138,8 @@ async function ingest(request: Request) {
     post.article ? JSON.stringify(post.article) : null, JSON.stringify(post.engagement ?? {}),
     post.score ?? 0, post.decision ?? "candidate", JSON.stringify(post.reasons ?? []),
     post.score_components ? JSON.stringify(post.score_components) : null,
-  )));
+    );
+  }));
   if (posts.length) await batchInChunks(db, posts.map((post, observedIndex) => db.prepare(`
     INSERT INTO post_observations (
       id, scan_id, post_id, captured_at, observed_index, score, decision, is_ad, is_reply, is_quote,

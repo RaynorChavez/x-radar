@@ -130,6 +130,10 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(ingest, /batchInChunks/);
   assert.match(ingest, /batchSize = 50/);
   assert.match(ingest, /countExistingPosts/);
+  assert.match(ingest, /contentTier/);
+  assert.match(ingest, /promoteCanonical/);
+  assert.match(ingest, /captured_at=\$\{promoteCanonical/);
+  assert.match(ingest, /last_seen_at=excluded\.last_seen_at/);
   assert.match(ingest, /Capture ingest failed/);
   assert.match(feed, /view === "history"/);
   assert.match(feed, /sort === "signal"/);
