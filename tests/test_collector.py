@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from collector.firefox_collect import (
-    EXTRACT_POST, _XCancelArticleParser, collect_target, legacy_kind, load_plan, parse_args,
+    EXTRACT_POST, _XCancelArticleParser, collect_target, hydrate_post_details, legacy_kind, load_plan, parse_args,
     validate_post_detail_target, validate_target, validate_xcancel_article_target,
 )
 
@@ -86,6 +86,8 @@ class CollectorContractTests(unittest.TestCase):
         self.assertIn('content: articleContent.slice(0, 12000)', EXTRACT_POST)
         self.assertIn('.filter(Boolean).join("\\n\\n")', EXTRACT_POST)
         self.assertIn('article-cover-image', EXTRACT_POST)
+        self.assertIn('tweet-text-show-more-link', EXTRACT_POST)
+        self.assertIn('_needs_text_hydration: needsTextHydration', EXTRACT_POST)
         self.assertIn('`https://xcancel.com/i/article/${articleId}`', EXTRACT_POST)
 
     def test_article_hydration_url_must_match_a_captured_post(self):
@@ -98,6 +100,18 @@ class CollectorContractTests(unittest.TestCase):
         ):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 validate_post_detail_target(url, "2076957440109625718")
+
+    def test_show_more_preview_is_replaced_by_longer_detail_text(self):
+        url = "https://x.com/researcher/status/42"
+        post = {
+            "post_id": "42", "url": url, "handle": "@researcher", "text": "Short preview",
+            "_needs_text_hydration": True, "discovery_sources": [{"acquisition_id": "home"}],
+        }
+        driver = FakeDriver({url: [{**post, "text": "Complete detail text with the missing conclusion."}]})
+        posts = {"42": post}
+        self.assertEqual(1, hydrate_post_details(driver, posts, "2026-07-14T00:00:00Z", time.monotonic() + 5))
+        self.assertEqual("Complete detail text with the missing conclusion.", posts["42"]["text"])
+        self.assertEqual([{"acquisition_id": "home"}], posts["42"]["discovery_sources"])
 
     def test_xcancel_fallback_is_fixed_to_numeric_article_page_and_extracts_only_article_blocks(self):
         self.assertEqual(

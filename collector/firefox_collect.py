@@ -39,6 +39,8 @@ const author = userLines.find((line) => !line.startsWith("@") && !/^·$/.test(li
 const avatar = root.querySelector('[data-testid="Tweet-User-Avatar"] img')?.src || null;
 const tweetBody = text('[data-testid="tweetText"]');
 const fullText = root.innerText || "";
+const needsTextHydration = Boolean(root.querySelector('[data-testid="tweet-text-show-more-link"]'))
+  || /(^|\n)Show more(\n|$)/i.test(fullText);
 
 const numberFrom = (value) => {
   if (!value) return 0;
@@ -133,6 +135,7 @@ return {
   xcancel_url: article?.xcancelUrl || `https://xcancel.com/${rawHandle}/status/${postId}`,
   external_links: externalLinks, media, article,
   _needs_article_hydration: Boolean(articlePreview && !articleView),
+  _needs_text_hydration: needsTextHydration,
   engagement: {
     replies: metric("reply", "repl"), reposts: metric("retweet", "repost"),
     likes: metric("like", "like"), bookmarks: metric("bookmark", "bookmark"),
@@ -401,9 +404,16 @@ def report_mixed_progress(plan: dict, acquisitions: list[dict], observed: int) -
         pass
 
 
-def hydrate_longform_articles(driver, posts: dict[str, dict], captured_at: str,
-                              global_deadline: float, limit: int = 8) -> int:
-    candidates = [post for post in posts.values() if post.pop("_needs_article_hydration", False)][:limit]
+def hydrate_post_details(driver, posts: dict[str, dict], captured_at: str,
+                         global_deadline: float, limit: int = 12) -> int:
+    candidates = []
+    for post in posts.values():
+        needs_article = bool(post.pop("_needs_article_hydration", False))
+        needs_text = bool(post.pop("_needs_text_hydration", False))
+        if needs_article or needs_text:
+            candidates.append(post)
+        if len(candidates) >= limit:
+            break
     hydrated = 0
     for post in candidates:
         remaining = global_deadline - time.monotonic()
@@ -426,11 +436,14 @@ def hydrate_longform_articles(driver, posts: dict[str, dict], captured_at: str,
                     break
         except (TimeoutException, ValueError):
             pass
-        if enriched and (enriched.get("article") or {}).get("content"):
+        has_complete_article = bool(enriched and (enriched.get("article") or {}).get("content"))
+        has_longer_text = bool(enriched and len(str(enriched.get("text") or "")) > len(str(post.get("text") or "")))
+        if enriched and (has_complete_article or has_longer_text):
             discovery_sources = post.get("discovery_sources", [])
             post.update(enriched)
             post["discovery_sources"] = discovery_sources
             post.pop("_needs_article_hydration", None)
+            post.pop("_needs_text_hydration", None)
             hydrated += 1
             continue
 
@@ -488,7 +501,7 @@ def main() -> int:
                     break
                 acquisitions.append(collect_target(driver, target, posts, captured_at, deadline, plan["target_unique"], 6))
                 report_mixed_progress(plan, acquisitions, len(posts))
-            articles_hydrated = hydrate_longform_articles(driver, posts, captured_at, deadline)
+            articles_hydrated = hydrate_post_details(driver, posts, captured_at, deadline)
             envelope = {
                 **plan, "captured_at": captured_at, "host": os.environ.get("XRADAR_HOST", "pi"),
                 "source": "x-mixed", "target": None, "request_id": plan.get("request_id") or args.request_id,
@@ -501,7 +514,7 @@ def main() -> int:
             kind = legacy_kind(args.target)
             target = {"id": str(uuid.uuid4()), "kind": kind, "url": args.target, "quota": args.limit}
             acquisition = collect_target(driver, target, posts, captured_at, deadline, args.limit, args.max_scrolls)
-            articles_hydrated = hydrate_longform_articles(driver, posts, captured_at, deadline)
+            articles_hydrated = hydrate_post_details(driver, posts, captured_at, deadline)
             envelope = {
                 "scan_id": str(uuid.uuid4()), "captured_at": captured_at,
                 "host": os.environ.get("XRADAR_HOST", "pi"),

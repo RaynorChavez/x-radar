@@ -314,6 +314,31 @@ function RichAttachments({ post }: { post: RadarPost }) {
   );
 }
 
+function likelySourceTruncated(post: RadarPost) {
+  const text = post.text.trim();
+  if (post.article || text.length < 240 || text.length > 360) return false;
+  return !/[.!?…'”’)}\]]$/.test(text);
+}
+
+function ExpandablePostText({ post }: { post: RadarPost }) {
+  const [expanded, setExpanded] = useState(false);
+  const collapsible = post.text.length > 240 || post.text.split(/\n/).length > 5;
+  const sourceTruncated = likelySourceTruncated(post);
+  return (
+    <div className="post-copy">
+      <p className={`signal-text ${collapsible && !expanded ? "is-collapsed" : ""}`}>{post.text}</p>
+      {collapsible && !sourceTruncated && (
+        <button type="button" className="see-more" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "Show less" : "See more"}
+        </button>
+      )}
+      {sourceTruncated && (
+        <a className="see-more" href={post.xcancelUrl} target="_blank" rel="noreferrer">See full post <span>↗</span></a>
+      )}
+    </div>
+  );
+}
+
 function AccountControl({ account, onSaved }: { account: Reputation; onSaved: (account: Reputation, previous: Reputation) => void }) {
   const [disposition, setDisposition] = useState(account.disposition);
   const [notes, setNotes] = useState(account.notes ?? "");
@@ -728,7 +753,7 @@ export function RadarDashboard({
                         <span>signal</span><b>{post.score.toFixed(2)}</b>
                       </div>
                     </div>
-                    <p className="signal-text">{post.text}</p>
+                    <ExpandablePostText post={post} />
                     <RichAttachments post={post} />
                     <div className="reason-row">
                       {post.reasons.slice(0, 3).map((reason) => <span key={reason}>{reason}</span>)}
