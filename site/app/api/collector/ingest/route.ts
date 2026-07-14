@@ -10,6 +10,18 @@ async function batchInChunks(db: RadarDb, statements: BatchStatements) {
   }
 }
 
+async function countExistingPosts(db: RadarDb, postIds: string[]) {
+  let count = 0;
+  const batchSize = 50;
+  for (let start = 0; start < postIds.length; start += batchSize) {
+    const ids = postIds.slice(start, start + batchSize);
+    const row = await db.prepare(`SELECT COUNT(*) count FROM posts WHERE post_id IN (${ids.map(() => "?").join(",")})`)
+      .bind(...ids).first<{ count: number }>();
+    count += row?.count ?? 0;
+  }
+  return count;
+}
+
 type CapturePost = {
   post_id: string; url: string; handle: string; author?: string | null;
   profile_image_url?: string | null; text: string;
@@ -35,6 +47,14 @@ function xcancelFor(post: CapturePost) {
 
 export async function POST(request: Request) {
   if (!collectorAuthorized(request)) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    return await ingest(request);
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "Capture ingest failed" }, { status: 500 });
+  }
+}
+
+async function ingest(request: Request) {
   const payload = await request.json() as {
     scan_id?: string; captured_at?: string; host?: string; source?: string;
     target?: string; request_id?: string;
@@ -56,10 +76,7 @@ export async function POST(request: Request) {
   ).then((digest) => [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""));
   const existingRun = await db.prepare("SELECT scan_id FROM runs WHERE scan_id=?").bind(scanId).first();
   if (existingRun) return Response.json({ scanId, duplicate: true, postsReceived: 0 });
-  const existingPosts = posts.length
-    ? await db.prepare(`SELECT COUNT(*) count FROM posts WHERE post_id IN (${posts.map(() => "?").join(",")})`)
-      .bind(...posts.map((post) => post.post_id)).first<{ count: number }>()
-    : { count: 0 };
+  const existingPosts = await countExistingPosts(db, posts.map((post) => post.post_id));
   if (posts.length) await batchInChunks(db, posts.map((post) => db.prepare(`
     INSERT INTO posts (
       post_id, url, handle, author, profile_image_url, text, posted_at, captured_at,
@@ -144,7 +161,7 @@ export async function POST(request: Request) {
   )));
   const ingestedAt = new Date().toISOString();
   const durationSeconds = Math.max(0, Math.round((Date.parse(ingestedAt) - Date.parse(capturedAt)) / 1000) || 0);
-  const postsAdded = posts.length - (existingPosts?.count ?? 0);
+  const postsAdded = posts.length - existingPosts;
   await db.prepare(`INSERT INTO runs(
     scan_id,host,source,target,request_id,captured_at,posts_seen,posts_kept,posts_added,
     duplicates,candidates,discarded,signals_count,media_count,links_count,duration_seconds,status,
