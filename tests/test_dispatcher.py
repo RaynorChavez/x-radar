@@ -18,6 +18,11 @@ class DispatcherServiceTests(unittest.TestCase):
         self.assertIn("x-radar-dispatch.timer", installer)
         self.assertIn("OnUnitActiveSec=1m", timer)
 
+    def test_system_service_can_dispatch_inline_without_user_systemd(self):
+        dispatcher = (ROOT / "bin/dispatch-queued").read_text()
+        self.assertIn("XRADAR_DISPATCH_INLINE", dispatcher)
+        self.assertIn('exec "$ROOT/bin/collect-once"', dispatcher)
+
     def test_single_machine_installer_keeps_dashboard_local_and_persistent(self):
         installer = (ROOT / "bin" / "install-single-machine").read_text()
         service = (ROOT / "deploy" / "systemd" / "x-radar-dashboard.service").read_text()

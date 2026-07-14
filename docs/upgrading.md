@@ -28,6 +28,13 @@ local dashboard. Schema initialization is additive and idempotent.
 After upgrading, run `bin/doctor`, inspect service status, and confirm that the
 post, observation, and run counts have not decreased.
 
+Production Pi installations managed by the private deployment control plane do
+not update this checkout in place. A tag matching `x-radar-app-v*` publishes one
+immutable Pi artifact. The private control-plane repository promotes its exact
+digest to staging and then production; the Pi verifies and atomically activates
+that release while keeping `.env`, SQLite, archives, models, and browser state
+outside the release tree.
+
 The topic-discovery upgrade is additive. Keep
 `XRADAR_ACQUISITION_MODE=legacy` during initial deployment if you want to test
 the database and dashboard migrations before enabling 150-post mixed periods;

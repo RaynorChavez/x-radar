@@ -5,10 +5,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 mkdir -p var/inbox public var/log
 
+CODEX_BIN="${XRADAR_CODEX_BIN:-$HOME/.local/bin/codex}"
+PROMPT="${XRADAR_AUTOMATION_PROMPT:-$ROOT/docs/pi-automation-prompt.md}"
+
 exec /usr/bin/flock -n var/collector.lock \
-  /usr/bin/timeout 45m "$HOME/.local/bin/codex" exec \
+  /usr/bin/timeout 45m "$CODEX_BIN" exec \
   -m gpt-5.6-luna \
   -c model_reasoning_effort='xhigh' \
   --dangerously-bypass-approvals-and-sandbox \
   -C "$ROOT" \
-  "$(cat docs/pi-automation-prompt.md)"
+  "$(cat "$PROMPT")"
