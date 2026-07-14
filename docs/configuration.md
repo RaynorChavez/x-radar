@@ -10,6 +10,8 @@ X Radar has one codebase and two runtime modes.
 | `XRADAR_SITE_BYPASS_TOKEN` | private Sites bypass token | empty |
 | `XRADAR_HOST` | collector label, such as `pi` | machine label |
 | `XRADAR_ACQUISITION_MODE` | `mixed` normally; `legacy` for rollback | same |
+| `XRADAR_GECKODRIVER` | optional absolute geckodriver path for a dedicated service user | usually omit |
+| `XRADAR_FIREFOX` | optional absolute Firefox binary path | usually omit |
 
 Generate an ingest token with a cryptographically secure password generator.
 Never store the real value in Git. In split mode, add it to the Sites runtime
