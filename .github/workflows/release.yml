@@ -37,6 +37,7 @@ jobs:
           python -m pip install -e '.[collector]'
           PYTHONPATH=src python -m unittest discover -s tests -v
           python tools/check_public_tree.py
+          cp site/.openai/hosting.example.json site/.openai/hosting.json
           npm --prefix site ci
           npm --prefix site run lint
           npm --prefix site test
