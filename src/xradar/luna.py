@@ -15,7 +15,7 @@ from .db import utcnow
 
 
 MODEL = "gpt-5.6-luna"
-REASONING_EFFORT = "xhigh"
+REASONING_EFFORT = "medium"
 
 
 def _strict_object(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:

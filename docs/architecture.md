@@ -30,7 +30,7 @@ sequentially and stops after 30 minutes. Focused account requests retain their
 provenance rather than duplicating the post.
 
 Curator preferences are revisioned. Adding a topic queues a coalesced bootstrap
-period; removing one affects only future periods. Luna `xhigh` supplies three
+period; removing one affects only future periods. Luna `medium` supplies three
 bounded, semantically distinct query variants per topic. The query contract
 matches X web search semantics: spaces mean AND, uppercase `OR` groups
 alternatives, phrases are quoted, and a query may require at most two concepts.
@@ -42,12 +42,13 @@ untrusted input, and Luna may add evidence for observable bait patterns but
 cannot create a hard block or navigate an account that was not first observed.
 
 Firefox writes an immutable raw JSON capture before ranking begins. A
-deterministic host orchestrator hashes that file, fetches one bounded batch from
-SQLite, and pipes only that batch to a fresh ephemeral Luna `xhigh` invocation.
+deterministic host orchestrator hashes that file, leases up to two bounded batches
+from SQLite, and pipes each batch to a fresh ephemeral Luna `medium` invocation.
 The invocation has a read-only sandbox, no project/user rules or configured MCP
 servers, and a strict output schema. It cannot run Firefox, select a different
-file, or mutate the database. SQLite checkpoints accepted post results so a
-malformed or timed-out response retries only failed items; a process restart
+file, or mutate the database. SQLite checkpoints accepted post results and
+identifies every active lease by batch ID, so a malformed or timed-out response
+retries only that batch; a process restart
 resumes the unfinished enrichment job instead of scrolling X again.
 
 Luna emits an auditable five-part score breakdown. A deterministic finalizer

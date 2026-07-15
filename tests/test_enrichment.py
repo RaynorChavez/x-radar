@@ -4,7 +4,15 @@ import unittest
 from pathlib import Path
 
 from xradar.db import connect
-from xradar.enrichment import finalize_job, next_batch, start_job, submit_batch
+from xradar.enrichment import (
+    active_batches,
+    claim_batch,
+    fail_active_batch,
+    finalize_job,
+    next_batch,
+    start_job,
+    submit_batch,
+)
 from xradar.planner import apply_preferences, topic_key
 
 
@@ -106,6 +114,26 @@ class EnrichmentJobTests(unittest.TestCase):
         self.raw.write_text(json.dumps(payload))
         with self.assertRaisesRegex(ValueError, "different raw capture"):
             start_job(self.conn, self.raw, output=self.output)
+
+    def test_parallel_leases_submit_and_fail_independently(self):
+        start_job(self.conn, self.raw, output=self.output, max_items=1, max_chars=20_000)
+        first = claim_batch(self.conn, "period")
+        second = claim_batch(self.conn, "period")
+        self.assertNotEqual(first["batchId"], second["batchId"])
+        self.assertEqual(2, len(active_batches(self.conn, "period")))
+
+        submit_batch(self.conn, "period", {
+            "batchId": first["batchId"], "results": [self.result(first["posts"][0]["post_id"])],
+        })
+        active = active_batches(self.conn, "period")
+        self.assertEqual([second["batchId"]], [batch["batchId"] for batch in active])
+
+        failed = fail_active_batch(
+            self.conn, "period", "one Luna call timed out", batch_id=second["batchId"],
+        )
+        self.assertEqual(1, failed["accepted"])
+        self.assertEqual(1, failed["failed"])
+        self.assertEqual(0, failed["inProgress"])
 
 
 if __name__ == "__main__":

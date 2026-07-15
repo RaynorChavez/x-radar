@@ -1,7 +1,7 @@
 # Authenticate Codex for unattended curation
 
 X Radar uses the Codex CLI and intentionally fixes collection runs to
-`gpt-5.6-luna` with xhigh reasoning. Install the CLI through OpenAI's official
+`gpt-5.6-luna` with medium reasoning. Install the CLI through OpenAI's official
 channel, then authenticate it as the same Linux user that will own the X Radar
 services:
 

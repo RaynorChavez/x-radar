@@ -6,6 +6,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ from .db import (
     set_account_disposition,
     set_post_state,
 )
-from .enrichment import fail_active_batch, finalize_job, next_batch, start_job, submit_batch
+from .enrichment import active_batches, claim_batch, fail_active_batch, finalize_job, start_job, submit_batch
 from .luna import expand_topic_queries, rank_batch
 from .planner import apply_preferences, build_period_plan, set_query_pack
 from .site_client import claim_request, complete_request, mutations, report_progress, send_event
@@ -162,6 +163,22 @@ def _enrich(conn: sqlite3.Connection, root: Path, raw_path: Path, capture_path: 
     )
     scan_id = job["scanId"]
     max_attempts = int(os.environ.get("XRADAR_LUNA_MAX_ATTEMPTS", "3"))
+    concurrency = int(os.environ.get("XRADAR_LUNA_CONCURRENCY", "2"))
+    if not 1 <= concurrency <= 4:
+        raise ValueError("XRADAR_LUNA_CONCURRENCY must be between 1 and 4")
+    database_row = conn.execute("PRAGMA database_list").fetchone()
+    database_path = Path(database_row["file"]).resolve()
+
+    def rank_in_worker(batch: dict[str, Any]):
+        worker = sqlite3.connect(database_path, timeout=30)
+        worker.row_factory = sqlite3.Row
+        worker.execute("PRAGMA foreign_keys=ON")
+        worker.execute("PRAGMA busy_timeout=30000")
+        try:
+            return rank_batch(worker, batch, root)
+        finally:
+            worker.close()
+
     while True:
         exhausted = conn.execute(
             "SELECT post_id,last_error FROM enrichment_items WHERE scan_id=? AND status='failed' AND attempts>=? LIMIT 1",
@@ -169,23 +186,34 @@ def _enrich(conn: sqlite3.Connection, root: Path, raw_path: Path, capture_path: 
         ).fetchone()
         if exhausted:
             raise RuntimeError(f"Luna enrichment exhausted retries for post {exhausted['post_id']}: {exhausted['last_error']}")
-        batch = next_batch(conn, scan_id)
-        if batch.get("ready"):
+        batches = active_batches(conn, scan_id)[:concurrency]
+        while len(batches) < concurrency:
+            batch = claim_batch(conn, scan_id)
+            if batch.get("ready") or batch.get("waiting"):
+                break
+            if not batch.get("posts"):
+                raise RuntimeError("enrichment returned neither a batch nor ready state")
+            batches.append(batch)
+        if not batches:
             break
-        if not batch.get("posts"):
-            raise RuntimeError("enrichment returned neither a batch nor ready state")
-        try:
-            result = rank_batch(conn, batch, root)
-            submit_batch(conn, scan_id, result.payload)
-        except Exception as error:
-            # Reset only the currently active batch. Accepted work from earlier
-            # batches remains checkpointed and is never sent to Luna again.
-            active = conn.execute(
-                "SELECT 1 FROM enrichment_items WHERE scan_id=? AND status='in_progress' LIMIT 1",
-                (scan_id,),
-            ).fetchone()
-            if active:
-                fail_active_batch(conn, scan_id, str(error))
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="xradar-luna") as executor:
+            futures = [(batch, executor.submit(rank_in_worker, batch)) for batch in batches]
+            for batch, future in futures:
+                try:
+                    result = future.result()
+                    submit_batch(conn, scan_id, result.payload)
+                except Exception as error:
+                    # A lease is the retry boundary. Parallel work in other
+                    # batches and accepted results from earlier waves survive.
+                    active = conn.execute(
+                        """
+                        SELECT 1 FROM enrichment_items
+                        WHERE scan_id=? AND status='in_progress' AND batch_id=? LIMIT 1
+                        """,
+                        (scan_id, batch["batchId"]),
+                    ).fetchone()
+                    if active:
+                        fail_active_batch(conn, scan_id, str(error), batch_id=batch["batchId"])
     return finalize_job(conn, scan_id, output=capture_path)
 
 

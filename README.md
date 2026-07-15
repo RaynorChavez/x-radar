@@ -27,7 +27,7 @@ bookmarks, sends messages, or changes account settings.
 ```text
 X Home/search/accounts → one Firefox session → SQLite + compressed archive
                            ├── immutable raw JSON
-                           ├── fresh bounded Luna xhigh ranking calls
+                           ├── two concurrent bounded Luna medium ranking calls
                            ├── account evidence and user overrides
                            ├── versioned topics and topic-account memory
                            └── durable outbox → dashboard database → web UI
