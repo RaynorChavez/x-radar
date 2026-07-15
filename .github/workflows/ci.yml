@@ -9,6 +9,22 @@ permissions:
   contents: read
 
 jobs:
+  onboarding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.13.0"
+      - run: python -m venv .venv
+      - run: .venv/bin/pip install -e '.[collector,semantic]'
+      - run: .venv/bin/python -c 'import numpy, onnxruntime, selenium, transformers, xradar'
+      - run: bash -n bin/*
+      - run: python tools/install_embedding_model.py --help
+
   collector:
     runs-on: ubuntu-latest
     steps:

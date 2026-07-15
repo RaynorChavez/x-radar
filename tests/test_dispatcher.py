@@ -23,6 +23,15 @@ class DispatcherServiceTests(unittest.TestCase):
         self.assertIn("XRADAR_DISPATCH_INLINE", dispatcher)
         self.assertIn('exec "$ROOT/bin/collect-once"', dispatcher)
 
+    def test_collector_defaults_to_networked_workspace_sandbox(self):
+        collector = (ROOT / "bin" / "collect-once").read_text()
+        self.assertIn("--sandbox workspace-write", collector)
+        self.assertIn("approval_policy=never", collector)
+        self.assertIn("sandbox_workspace_write.network_access=true", collector)
+        self.assertIn("XRADAR_CODEX_UNSANDBOXED", collector)
+        self.assertNotIn("XRADAR_LUNA_MODEL", collector)
+        self.assertIn("-m gpt-5.6-luna", collector)
+
     def test_single_machine_installer_keeps_dashboard_local_and_persistent(self):
         installer = (ROOT / "bin" / "install-single-machine").read_text()
         service = (ROOT / "deploy" / "systemd" / "x-radar-dashboard.service").read_text()

@@ -5,13 +5,21 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 mkdir -p var/inbox public var/log
 
-CODEX_BIN="${XRADAR_CODEX_BIN:-$HOME/.local/bin/codex}"
+CODEX_BIN="${XRADAR_CODEX_BIN:-$(command -v codex 2>/dev/null || printf '%s' "$HOME/.local/bin/codex")}"
 PROMPT="${XRADAR_AUTOMATION_PROMPT:-$ROOT/docs/pi-automation-prompt.md}"
+CODEX_SAFETY_ARGS=(
+  --sandbox workspace-write
+  -c approval_policy=never
+  -c sandbox_workspace_write.network_access=true
+)
+if [[ "${XRADAR_CODEX_UNSANDBOXED:-0}" == "1" ]]; then
+  CODEX_SAFETY_ARGS=(--dangerously-bypass-approvals-and-sandbox)
+fi
 
 exec /usr/bin/flock -n var/collector.lock \
   /usr/bin/timeout 45m "$CODEX_BIN" exec \
   -m gpt-5.6-luna \
   -c model_reasoning_effort='xhigh' \
-  --dangerously-bypass-approvals-and-sandbox \
+  "${CODEX_SAFETY_ARGS[@]}" \
   -C "$ROOT" \
   "$(cat "$PROMPT")"
