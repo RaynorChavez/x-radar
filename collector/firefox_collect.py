@@ -312,7 +312,7 @@ def load_plan(path: str) -> dict:
 
 def _source_ref(target: dict) -> dict:
     return {
-        key: target[key] for key in ("id", "kind", "topic_key", "topic", "handle", "query")
+        key: target[key] for key in ("id", "kind", "topic_key", "topic", "handle", "query", "query_kind")
         if target.get(key) is not None
     } | {"acquisition_id": target["id"]}
 

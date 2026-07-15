@@ -141,6 +141,34 @@ dashboard supplies a stable monogram until the account is observed again.
 
 ## Ranking
 
+Ranking is checkpointed in bounded batches. Luna never rewrites the raw capture
+or generates executable transformation code. `enrichment-next` supplies the
+exact posts and allowed topic keys for one batch. `enrichment-submit` accepts:
+
+```json
+{
+  "batchId": "UUID from enrichment-next",
+  "results": [{
+    "post_id": "exact captured post ID",
+    "topic_matches": [{"topic_key": "allowed key", "confidence": 0.9}],
+    "score_components": {
+      "novelty": {"score": 0.8, "rationale": "Post-specific rationale."},
+      "evidence": {"score": 0.7, "rationale": "Post-specific rationale."},
+      "relevance": {"score": 0.9, "rationale": "Post-specific rationale."},
+      "density": {"score": 0.6, "rationale": "Post-specific rationale."},
+      "importance": {"score": 0.7, "rationale": "Post-specific rationale."},
+      "penalties": []
+    },
+    "reasons": ["Concise explanation of the decision."],
+    "account_signals": []
+  }]
+}
+```
+
+The batch validator checkpoints valid items and returns field-specific errors
+for invalid or missing items. A retry contains only unaccepted work. Final score
+and decision are deterministic outputs and must not be supplied by Luna.
+
 Judge the information, not popularity. Score from 0 to 1 using:
 
 - novelty: 30%;
