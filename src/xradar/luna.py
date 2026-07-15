@@ -268,6 +268,10 @@ def invoke(
         return LunaResult(result, invocation_id, usage, duration_ms)
     except subprocess.TimeoutExpired as error:
         duration_ms = round((time.monotonic() - started) * 1000)
+        partial_stdout = error.stdout or ""
+        if isinstance(partial_stdout, bytes):
+            partial_stdout = partial_stdout.decode("utf-8", errors="replace")
+        usage = _usage_from_jsonl(partial_stdout)
         _record(conn, invocation_id=invocation_id, purpose=purpose, scan_id=scan_id,
                 batch_id=batch_id, status="timeout", usage=usage, duration_ms=duration_ms,
                 error=f"Luna call exceeded {timeout_seconds} seconds")
