@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import subprocess
 import unittest
 
 
@@ -22,6 +24,27 @@ class DispatcherServiceTests(unittest.TestCase):
         dispatcher = (ROOT / "bin/dispatch-queued").read_text()
         self.assertIn("XRADAR_DISPATCH_INLINE", dispatcher)
         self.assertIn('exec "$ROOT/bin/collect-once"', dispatcher)
+
+    def test_collector_lock_contention_is_a_successful_defer(self):
+        collector = (ROOT / "bin" / "collect-once").read_text()
+        self.assertIn("flock -n -E 75", collector)
+        self.assertIn("collector already active; deferred successfully", collector)
+        if not Path("/usr/bin/flock").exists():
+            self.skipTest("GNU flock integration is verified on Linux CI")
+        lock = ROOT / "var" / "collector.lock"
+        lock.parent.mkdir(exist_ok=True)
+        holder = subprocess.Popen(["/usr/bin/flock", str(lock), "sleep", "5"])
+        try:
+            completed = subprocess.run(
+                [str(ROOT / "bin" / "collect-once")], cwd=ROOT, text=True,
+                env={**os.environ, "XRADAR_COLLECTOR_ORCHESTRATION": "pipeline"},
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3,
+            )
+        finally:
+            holder.terminate()
+            holder.wait(timeout=2)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("deferred successfully", completed.stdout)
 
     def test_collector_defaults_to_networked_workspace_sandbox(self):
         collector = (ROOT / "bin" / "collect-once").read_text()

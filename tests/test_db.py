@@ -82,6 +82,22 @@ class DatabaseTests(unittest.TestCase):
         })
         self.assertIsNone(self.conn.execute("SELECT score_components_json FROM posts").fetchone()[0])
 
+    def test_partial_capture_is_terminal_and_records_explicit_failure_count(self):
+        ingest_capture(self.conn, {
+            "scan_id": "partial", "captured_at": "2026-07-15T00:00:00Z", "host": "test",
+            "enrichment": {"status": "partial", "accepted": 1, "failed": 1},
+            "posts": [{
+                "post_id": "retained", "url": "https://x.com/lab/status/retained",
+                "handle": "lab", "text": "Retained raw post", "score": 0,
+                "decision": "discard", "enrichment_status": "failed",
+            }],
+        })
+        run = self.conn.execute("SELECT status,error,finished_at FROM runs WHERE scan_id='partial'").fetchone()
+        self.assertEqual("partial", run["status"])
+        self.assertEqual("1 post(s) retained unclassified", run["error"])
+        self.assertIsNotNone(run["finished_at"])
+        self.assertEqual(1, self.conn.execute("SELECT count(*) FROM posts").fetchone()[0])
+
     def test_direct_topic_match_calibrates_only_the_relevance_component(self):
         components = {
             "novelty": {"score": .6, "rationale": "New policy proposal."},

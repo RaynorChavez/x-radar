@@ -74,23 +74,99 @@ def _job_row(conn: sqlite3.Connection, scan_id: str) -> sqlite3.Row:
 def _job_summary(conn: sqlite3.Connection, scan_id: str) -> dict[str, Any]:
     job = _job_row(conn, scan_id)
     counts = {
-        row["status"]: int(row["count"])
+        row["state"]: int(row["count"])
         for row in conn.execute(
-            "SELECT status,count(*) count FROM enrichment_items WHERE scan_id=? GROUP BY status",
+            "SELECT state,count(*) count FROM enrichment_items WHERE scan_id=? GROUP BY state",
             (scan_id,),
         )
     }
+    warnings = json.loads(job["warnings_json"] or "[]")
     return {
         "scanId": scan_id,
-        "status": job["status"],
+        "status": job["state"],
         "rankingVersion": job["ranking_version"],
         "total": int(job["total_items"]),
         "pending": counts.get("pending", 0),
         "inProgress": counts.get("in_progress", 0),
-        "failed": counts.get("failed", 0),
+        "retry": counts.get("retry", 0),
+        "failed": counts.get("retry", 0) + counts.get("exhausted", 0),
+        "exhausted": counts.get("exhausted", 0),
         "accepted": counts.get("accepted", 0),
+        "warningCount": len(warnings),
+        "lastError": job["last_error"],
         "output": job["output_path"],
     }
+
+
+def _legacy_job_status(state: str) -> str:
+    if state in {"complete", "partial", "failed"}:
+        return "complete" if state != "failed" else "ready"
+    if state in {"ready", "partial_ready"}:
+        return "ready"
+    if state == "pending":
+        return "pending"
+    return "running"
+
+
+def _set_job_state(
+    conn: sqlite3.Connection,
+    scan_id: str,
+    state: str,
+    *,
+    error: str | None = None,
+    finished: bool = False,
+) -> None:
+    now = utcnow()
+    conn.execute(
+        """
+        UPDATE enrichment_jobs SET state=?,status=?,last_error=?,updated_at=?,
+          finished_at=CASE WHEN ? THEN ? ELSE finished_at END
+        WHERE scan_id=?
+        """,
+        (state, _legacy_job_status(state), error, now, int(finished), now, scan_id),
+    )
+
+
+def _append_job_warnings(conn: sqlite3.Connection, scan_id: str, warnings: list[dict[str, Any]]) -> None:
+    if not warnings:
+        return
+    row = _job_row(conn, scan_id)
+    existing = json.loads(row["warnings_json"] or "[]")
+    existing.extend(warnings)
+    conn.execute(
+        "UPDATE enrichment_jobs SET warnings_json=?,updated_at=? WHERE scan_id=?",
+        (json.dumps(existing[-500:], sort_keys=True), utcnow(), scan_id),
+    )
+
+
+def _reconcile_job_state(conn: sqlite3.Connection, scan_id: str) -> str:
+    counts = {
+        row["state"]: int(row["count"])
+        for row in conn.execute(
+            "SELECT state,count(*) count FROM enrichment_items WHERE scan_id=? GROUP BY state",
+            (scan_id,),
+        )
+    }
+    last = conn.execute(
+        """
+        SELECT last_error FROM enrichment_items
+        WHERE scan_id=? AND last_error IS NOT NULL
+        ORDER BY updated_at DESC LIMIT 1
+        """,
+        (scan_id,),
+    ).fetchone()
+    error = last["last_error"] if last else None
+    if counts.get("in_progress", 0):
+        state = "running"
+    elif counts.get("pending", 0) or counts.get("retry", 0):
+        state = "resumable" if counts.get("retry", 0) else "pending"
+    elif counts.get("exhausted", 0):
+        state = "partial_ready" if counts.get("accepted", 0) else "failed"
+    else:
+        state = "ready"
+        error = None
+    _set_job_state(conn, scan_id, state, error=error, finished=state == "failed")
+    return state
 
 
 def start_job(
@@ -101,11 +177,14 @@ def start_job(
     max_items: int = DEFAULT_BATCH_ITEMS,
     max_chars: int = DEFAULT_BATCH_CHARS,
     ranking_version: str = RANKING_VERSION,
+    max_attempts: int = 3,
 ) -> dict[str, Any]:
     if not 1 <= int(max_items) <= 50:
         raise ValueError("max_items must be between 1 and 50")
     if not 4_000 <= int(max_chars) <= 200_000:
         raise ValueError("max_chars must be between 4000 and 200000")
+    if not 1 <= int(max_attempts) <= 10:
+        raise ValueError("max_attempts must be between 1 and 10")
     raw_path, raw_bytes, payload = _load_json(raw_capture)
     scan_id = _capture_id(payload)
     posts = payload.get("posts")
@@ -131,12 +210,14 @@ def start_job(
         """
         INSERT INTO enrichment_jobs(
           scan_id,raw_path,raw_sha256,output_path,ranking_version,status,total_items,
-          batch_max_items,batch_max_chars,preference_json,allowed_topics_json,created_at,updated_at
-        ) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?)
+          batch_max_items,batch_max_chars,preference_json,allowed_topics_json,created_at,updated_at,
+          state,max_attempts
+        ) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?,'pending',?)
         """,
         (
             scan_id, str(raw_path), digest, str(output_path), ranking_version, len(posts),
             int(max_items), int(max_chars), preference_json, topics_json, now, now,
+            int(max_attempts),
         ),
     )
     conn.executemany(
@@ -192,7 +273,7 @@ def _batch_payload(
 def active_batches(conn: sqlite3.Connection, scan_id: str) -> list[dict[str, Any]]:
     """Return durable leased batches without claiming additional work."""
     job = _job_row(conn, scan_id)
-    if job["status"] == "complete":
+    if job["state"] in {"complete", "partial"}:
         return []
     raw = _verified_raw(job)
     batch_ids = [
@@ -201,7 +282,7 @@ def active_batches(conn: sqlite3.Connection, scan_id: str) -> list[dict[str, Any
             """
             SELECT batch_id,MIN(observed_index) first_index
             FROM enrichment_items
-            WHERE scan_id=? AND status='in_progress' AND batch_id IS NOT NULL
+            WHERE scan_id=? AND state='in_progress' AND batch_id IS NOT NULL
             GROUP BY batch_id ORDER BY first_index
             """,
             (scan_id,),
@@ -212,7 +293,7 @@ def active_batches(conn: sqlite3.Connection, scan_id: str) -> list[dict[str, Any
         rows = list(conn.execute(
             """
             SELECT * FROM enrichment_items
-            WHERE scan_id=? AND status='in_progress' AND batch_id=?
+            WHERE scan_id=? AND state='in_progress' AND batch_id=?
             ORDER BY observed_index
             """,
             (scan_id, batch_id),
@@ -224,24 +305,50 @@ def active_batches(conn: sqlite3.Connection, scan_id: str) -> list[dict[str, Any
 def claim_batch(conn: sqlite3.Connection, scan_id: str) -> dict[str, Any]:
     """Lease one new batch even when another batch is already in progress."""
     job = _job_row(conn, scan_id)
-    if job["status"] == "complete":
+    if job["state"] in {"complete", "partial"}:
         return {**_job_summary(conn, scan_id), "complete": True, "posts": []}
+    conn.execute(
+        """
+        UPDATE enrichment_items SET state='exhausted',status='failed',batch_id=NULL,updated_at=?
+        WHERE scan_id=? AND state='retry' AND attempts>=?
+        """,
+        (utcnow(), scan_id, int(job["max_attempts"])),
+    )
     raw = _verified_raw(job)
     candidates = list(conn.execute(
         """
-        SELECT * FROM enrichment_items WHERE scan_id=? AND status IN ('failed','pending')
-        ORDER BY CASE status WHEN 'failed' THEN 0 ELSE 1 END,observed_index
+        SELECT * FROM enrichment_items WHERE scan_id=? AND state IN ('retry','pending')
+        ORDER BY CASE state WHEN 'retry' THEN 0 ELSE 1 END,attempts,observed_index
         """,
         (scan_id,),
     ))
+    if candidates:
+        first_state = str(candidates[0]["state"])
+        first_attempts = int(candidates[0]["attempts"])
+        candidates = [
+            row for row in candidates
+            if row["state"] == first_state and int(row["attempts"]) == first_attempts
+        ]
+        if first_attempts == 0:
+            item_limit = int(job["batch_max_items"])
+            char_limit = int(job["batch_max_chars"])
+        elif first_attempts == 1 and int(job["max_attempts"]) > 2:
+            item_limit = max(1, math.ceil(int(job["batch_max_items"]) / 2))
+            char_limit = max(4_000, math.ceil(int(job["batch_max_chars"]) / 2))
+        else:
+            item_limit = 1
+            char_limit = int(job["batch_max_chars"])
+    else:
+        item_limit = int(job["batch_max_items"])
+        char_limit = int(job["batch_max_chars"])
     selected: list[sqlite3.Row] = []
     chars = 0
     for row in candidates:
         item = _ranking_input(raw["posts"][int(row["observed_index"])])
         item_chars = len(json.dumps(item, ensure_ascii=False))
         if selected and (
-            len(selected) >= int(job["batch_max_items"])
-            or chars + item_chars > int(job["batch_max_chars"])
+            len(selected) >= item_limit
+            or chars + item_chars > char_limit
         ):
             break
         selected.append(row)
@@ -249,19 +356,21 @@ def claim_batch(conn: sqlite3.Connection, scan_id: str) -> dict[str, Any]:
     if not selected:
         waiting = bool(active_batches(conn, scan_id))
         if not waiting:
-            conn.execute("UPDATE enrichment_jobs SET status='ready',updated_at=? WHERE scan_id=?", (utcnow(), scan_id))
+            _reconcile_job_state(conn, scan_id)
             conn.commit()
+        summary = _job_summary(conn, scan_id)
         return {
-            **_job_summary(conn, scan_id), "complete": False,
-            "ready": not waiting, "waiting": waiting, "posts": [],
+            **summary, "complete": False,
+            "ready": not waiting and summary["status"] in {"ready", "partial_ready", "failed"},
+            "waiting": waiting, "posts": [],
         }
     batch_id = str(uuid.uuid4())
     now = utcnow()
     conn.executemany(
-        "UPDATE enrichment_items SET status='in_progress',batch_id=?,updated_at=? WHERE scan_id=? AND post_id=?",
+        "UPDATE enrichment_items SET status='in_progress',state='in_progress',batch_id=?,updated_at=? WHERE scan_id=? AND post_id=?",
         ((batch_id, now, scan_id, row["post_id"]) for row in selected),
     )
-    conn.execute("UPDATE enrichment_jobs SET status='running',updated_at=? WHERE scan_id=?", (now, scan_id))
+    _set_job_state(conn, scan_id, "running")
     conn.commit()
     rows = list(conn.execute(
         "SELECT * FROM enrichment_items WHERE scan_id=? AND batch_id=? ORDER BY observed_index",
@@ -311,36 +420,49 @@ def _clean_topic_matches(value: Any, allowed: dict[str, str]) -> list[dict[str, 
     return result
 
 
-def _clean_signals(value: Any, raw_post: dict[str, Any]) -> list[dict[str, Any]]:
+def _clean_signals(value: Any, raw_post: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
     if value is None:
-        return []
+        return [], []
     if not isinstance(value, list) or len(value) > 8:
-        raise ValueError("account_signals must be an array of at most 8 items")
-    result = []
+        return [], ["dropped invalid optional account_signals container"]
+    result: list[dict[str, Any]] = []
+    warnings: list[str] = []
     expected_handle = str(raw_post.get("handle") or "").strip().casefold().lstrip("@")
-    for item in value:
-        if not isinstance(item, dict):
-            raise ValueError("each account signal must be an object")
-        reason = str(item.get("reason") or "").strip()
-        handle = str(item.get("handle") or raw_post.get("handle") or "").strip()
-        confidence = item.get("confidence")
-        if reason not in SIGNAL_REASONS:
-            raise ValueError(f"unsupported account signal reason: {reason}")
-        if handle.casefold().lstrip("@") != expected_handle:
-            raise ValueError("account signal handle must match the ranked post")
-        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= float(confidence) <= 1:
-            raise ValueError("account signal confidence must be between 0 and 1")
-        result.append({
-            "handle": handle,
-            "post_id": str(raw_post["post_id"]),
-            "post_url": str(raw_post["url"]),
-            "reason": reason,
-            "confidence": round(float(confidence), 4),
-        })
-    return result
+    for index, item in enumerate(value):
+        try:
+            if not isinstance(item, dict):
+                raise ValueError("signal must be an object")
+            reason = str(item.get("reason") or "").strip()
+            handle = str(item.get("handle") or raw_post.get("handle") or "").strip()
+            confidence = item.get("confidence")
+            if reason not in SIGNAL_REASONS:
+                raise ValueError(f"unsupported reason: {reason or '<empty>'}")
+            if handle.casefold().lstrip("@") != expected_handle:
+                raise ValueError("handle does not match ranked post")
+            if (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not math.isfinite(float(confidence))
+                or not 0 <= float(confidence) <= 1
+            ):
+                raise ValueError("confidence must be between 0 and 1")
+            result.append({
+                "handle": handle,
+                "post_id": str(raw_post["post_id"]),
+                "post_url": str(raw_post["url"]),
+                "reason": reason,
+                "confidence": round(float(confidence), 4),
+            })
+        except (TypeError, ValueError) as error:
+            warnings.append(f"dropped optional account_signal[{index}]: {error}")
+    return result, warnings
 
 
-def _validate_result(result: Any, raw_post: dict[str, Any], allowed: dict[str, str]) -> dict[str, Any]:
+def _validate_result(
+    result: Any,
+    raw_post: dict[str, Any],
+    allowed: dict[str, str],
+) -> tuple[dict[str, Any], list[str]]:
     if not isinstance(result, dict):
         raise ValueError("result must be an object")
     if str(result.get("post_id") or "") != str(raw_post["post_id"]):
@@ -354,14 +476,15 @@ def _validate_result(result: Any, raw_post: dict[str, Any], allowed: dict[str, s
     if score is None:
         raise ValueError("score_components are required")
     decision = "keep" if score >= .62 else "candidate" if score >= .45 else "discard"
+    signals, warnings = _clean_signals(result.get("account_signals", []), raw_post)
     return {
         "topic_matches": topic_matches,
         "score_components": ranked["score_components"],
         "score": score,
         "decision": decision,
         "reasons": _clean_reasons(result.get("reasons")),
-        "account_signals": _clean_signals(result.get("account_signals", []), raw_post),
-    }
+        "account_signals": signals,
+    }, warnings
 
 
 def fail_active_batch(
@@ -377,20 +500,25 @@ def fail_active_batch(
         where += " AND batch_id=?"
         parameters += (batch_id,)
     rows = list(conn.execute(
-        f"SELECT post_id FROM enrichment_items WHERE {where}",
+        f"SELECT post_id,attempts FROM enrichment_items WHERE {where.replace('status=', 'state=')}",
         parameters,
     ))
     if not rows:
         raise ValueError("enrichment job has no active batch")
     message = " ".join(str(error).split())[:1000]
-    conn.executemany(
-        """
-        UPDATE enrichment_items SET status='failed',attempts=attempts+1,last_error=?,batch_id=NULL,updated_at=?
-        WHERE scan_id=? AND post_id=?
-        """,
-        ((message, utcnow(), scan_id, row["post_id"]) for row in rows),
-    )
-    conn.execute("UPDATE enrichment_jobs SET status='running',last_error=?,updated_at=? WHERE scan_id=?", (message, utcnow(), scan_id))
+    max_attempts = int(_job_row(conn, scan_id)["max_attempts"])
+    now = utcnow()
+    for row in rows:
+        attempts = int(row["attempts"]) + 1
+        state = "exhausted" if attempts >= max_attempts else "retry"
+        conn.execute(
+            """
+            UPDATE enrichment_items SET status='failed',state=?,attempts=?,last_error=?,
+              batch_id=NULL,updated_at=? WHERE scan_id=? AND post_id=?
+            """,
+            (state, attempts, message, now, scan_id, row["post_id"]),
+        )
+    _reconcile_job_state(conn, scan_id)
     conn.commit()
     return {**_job_summary(conn, scan_id), "batchError": message}
 
@@ -405,7 +533,7 @@ def submit_batch(conn: sqlite3.Connection, scan_id: str, payload: dict[str, Any]
     rows = list(conn.execute(
         """
         SELECT * FROM enrichment_items
-        WHERE scan_id=? AND status='in_progress' AND batch_id=?
+        WHERE scan_id=? AND state='in_progress' AND batch_id=?
         ORDER BY observed_index
         """,
         (scan_id, batch_id),
@@ -416,51 +544,62 @@ def submit_batch(conn: sqlite3.Connection, scan_id: str, payload: dict[str, Any]
     if not isinstance(results, list):
         return fail_active_batch(conn, scan_id, "results must be an array", batch_id=batch_id)
     mapped: dict[str, Any] = {}
-    duplicate_ids: set[str] = set()
+    frequencies: dict[str, int] = {}
     for result in results:
         post_id = str(result.get("post_id") or "") if isinstance(result, dict) else ""
-        if post_id in mapped:
-            duplicate_ids.add(post_id)
+        frequencies[post_id] = frequencies.get(post_id, 0) + 1
         mapped[post_id] = result
+    requested_ids = {str(row["post_id"]) for row in rows}
+    unexpected_ids = sorted(post_id for post_id in frequencies if post_id not in requested_ids)
     raw = _verified_raw(job)
     allowed = json.loads(job["allowed_topics_json"])
     accepted = 0
     errors: list[dict[str, str]] = []
+    batch_warnings: list[dict[str, Any]] = [
+        {"batchId": batch_id, "kind": "unexpected_post_id", "postId": post_id}
+        for post_id in unexpected_ids
+    ]
     now = utcnow()
     for row in rows:
         post_id = str(row["post_id"])
         try:
-            if post_id in duplicate_ids:
+            if frequencies.get(post_id, 0) > 1:
                 raise ValueError("duplicate result for post_id")
             if post_id not in mapped:
                 raise ValueError("missing result for batch item")
-            enrichment = _validate_result(mapped[post_id], raw["posts"][int(row["observed_index"])], allowed)
+            enrichment, warnings = _validate_result(
+                mapped[post_id], raw["posts"][int(row["observed_index"])], allowed,
+            )
             conn.execute(
                 """
-                UPDATE enrichment_items SET status='accepted',attempts=attempts+1,enrichment_json=?,
-                  last_error=NULL,batch_id=NULL,updated_at=? WHERE scan_id=? AND post_id=?
+                UPDATE enrichment_items SET status='accepted',state='accepted',attempts=attempts+1,
+                  enrichment_json=?,warnings_json=?,last_error=NULL,batch_id=NULL,updated_at=?
+                WHERE scan_id=? AND post_id=?
                 """,
-                (json.dumps(enrichment, sort_keys=True), now, scan_id, post_id),
+                (
+                    json.dumps(enrichment, sort_keys=True), json.dumps(warnings, sort_keys=True),
+                    now, scan_id, post_id,
+                ),
             )
+            batch_warnings.extend({
+                "batchId": batch_id, "kind": "optional_signal_dropped",
+                "postId": post_id, "warning": warning,
+            } for warning in warnings)
             accepted += 1
         except (TypeError, ValueError) as error:
             message = " ".join(str(error).split())[:1000]
+            attempts = int(row["attempts"]) + 1
+            state = "exhausted" if attempts >= int(job["max_attempts"]) else "retry"
             conn.execute(
                 """
-                UPDATE enrichment_items SET status='failed',attempts=attempts+1,last_error=?,
+                UPDATE enrichment_items SET status='failed',state=?,attempts=?,last_error=?,
                   batch_id=NULL,updated_at=? WHERE scan_id=? AND post_id=?
                 """,
-                (message, now, scan_id, post_id),
+                (state, attempts, message, now, scan_id, post_id),
             )
             errors.append({"post_id": post_id, "error": message})
-    remaining = conn.execute(
-        "SELECT count(*) FROM enrichment_items WHERE scan_id=? AND status!='accepted'", (scan_id,)
-    ).fetchone()[0]
-    status = "ready" if remaining == 0 else "running"
-    conn.execute(
-        "UPDATE enrichment_jobs SET status=?,last_error=?,updated_at=? WHERE scan_id=?",
-        (status, errors[0]["error"] if errors else None, now, scan_id),
-    )
+    _append_job_warnings(conn, scan_id, batch_warnings)
+    _reconcile_job_state(conn, scan_id)
     conn.commit()
     return {**_job_summary(conn, scan_id), "batchId": batch_id, "acceptedThisBatch": accepted, "errors": errors}
 
@@ -468,32 +607,64 @@ def submit_batch(conn: sqlite3.Connection, scan_id: str, payload: dict[str, Any]
 def finalize_job(conn: sqlite3.Connection, scan_id: str, *, output: str | Path | None = None) -> dict[str, Any]:
     job = _job_row(conn, scan_id)
     incomplete = conn.execute(
-        "SELECT count(*) FROM enrichment_items WHERE scan_id=? AND status!='accepted'", (scan_id,)
+        """
+        SELECT count(*) FROM enrichment_items
+        WHERE scan_id=? AND state NOT IN ('accepted','exhausted')
+        """,
+        (scan_id,),
     ).fetchone()[0]
     if incomplete:
-        raise ValueError(f"cannot finalize: {incomplete} posts are not accepted")
+        raise ValueError(f"cannot finalize: {incomplete} posts are neither accepted nor exhausted")
     raw = _verified_raw(job)
     signals: list[dict[str, Any]] = []
     decisions = {"keep": 0, "candidate": 0, "discard": 0}
     rows = list(conn.execute(
         "SELECT * FROM enrichment_items WHERE scan_id=? ORDER BY observed_index", (scan_id,)
     ))
+    failures: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = json.loads(job["warnings_json"] or "[]")
     for row in rows:
-        enrichment = json.loads(row["enrichment_json"])
-        signals.extend(enrichment.pop("account_signals", []))
         post = raw["posts"][int(row["observed_index"])]
+        if row["state"] == "accepted":
+            enrichment = json.loads(row["enrichment_json"])
+            signals.extend(enrichment.pop("account_signals", []))
+            post["enrichment_status"] = "accepted"
+        else:
+            message = str(row["last_error"] or "Luna ranking unavailable")
+            enrichment = {
+                "topic_matches": [], "score": 0.0, "decision": "discard",
+                "reasons": ["Ranking unavailable after bounded retries; retained for audit."],
+                "enrichment_status": "failed", "enrichment_error": message,
+            }
+            failures.append({
+                "post_id": str(row["post_id"]), "attempts": int(row["attempts"]),
+                "error": message,
+            })
         post.update(enrichment)
         decisions[post["decision"]] += 1
     raw["account_signals"] = signals
+    raw["enrichment"] = {
+        "status": "partial" if failures else "complete",
+        "ranking_version": job["ranking_version"],
+        "accepted": len(rows) - len(failures), "failed": len(failures),
+        "failures": failures, "warnings": warnings,
+    }
     destination = Path(output).resolve() if output else Path(job["output_path"])
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n")
     os.replace(temporary, destination)
     now = utcnow()
+    state = "partial" if failures else "complete"
     conn.execute(
-        "UPDATE enrichment_jobs SET status='complete',output_path=?,completed_at=?,updated_at=?,last_error=NULL WHERE scan_id=?",
-        (str(destination), now, now, scan_id),
+        """
+        UPDATE enrichment_jobs SET status='complete',state=?,output_path=?,completed_at=?,
+          finished_at=?,updated_at=?,last_error=? WHERE scan_id=?
+        """,
+        (
+            state, str(destination), now, now, now,
+            failures[0]["error"] if failures else None, scan_id,
+        ),
     )
     conn.commit()
     return {
@@ -501,6 +672,8 @@ def finalize_job(conn: sqlite3.Connection, scan_id: str, *, output: str | Path |
         "posts": len(rows),
         "decisions": decisions,
         "accountSignals": len(signals),
+        "failedPosts": len(failures),
+        "warnings": len(warnings),
     }
 
 
@@ -508,8 +681,8 @@ def job_status(conn: sqlite3.Connection, scan_id: str) -> dict[str, Any]:
     result = _job_summary(conn, scan_id)
     failed = [dict(row) for row in conn.execute(
         """
-        SELECT post_id,attempts,last_error FROM enrichment_items
-        WHERE scan_id=? AND status='failed' ORDER BY observed_index LIMIT 50
+        SELECT post_id,state,attempts,last_error,warnings_json FROM enrichment_items
+        WHERE scan_id=? AND state IN ('retry','exhausted') ORDER BY observed_index LIMIT 50
         """,
         (scan_id,),
     )]

@@ -155,14 +155,15 @@ def _collect(
 
 
 def _enrich(conn: sqlite3.Connection, root: Path, raw_path: Path, capture_path: Path) -> dict[str, Any]:
+    max_attempts = int(os.environ.get("XRADAR_LUNA_MAX_ATTEMPTS", "3"))
     job = start_job(
         conn, raw_path, output=capture_path,
         max_items=int(os.environ.get("XRADAR_LUNA_BATCH_ITEMS", "24")),
         max_chars=int(os.environ.get("XRADAR_LUNA_BATCH_CHARS", "60000")),
         ranking_version="luna-stateless-v2",
+        max_attempts=max_attempts,
     )
     scan_id = job["scanId"]
-    max_attempts = int(os.environ.get("XRADAR_LUNA_MAX_ATTEMPTS", "3"))
     concurrency = int(os.environ.get("XRADAR_LUNA_CONCURRENCY", "2"))
     if not 1 <= concurrency <= 4:
         raise ValueError("XRADAR_LUNA_CONCURRENCY must be between 1 and 4")
@@ -180,12 +181,6 @@ def _enrich(conn: sqlite3.Connection, root: Path, raw_path: Path, capture_path: 
             worker.close()
 
     while True:
-        exhausted = conn.execute(
-            "SELECT post_id,last_error FROM enrichment_items WHERE scan_id=? AND status='failed' AND attempts>=? LIMIT 1",
-            (scan_id, max_attempts),
-        ).fetchone()
-        if exhausted:
-            raise RuntimeError(f"Luna enrichment exhausted retries for post {exhausted['post_id']}: {exhausted['last_error']}")
         batches = active_batches(conn, scan_id)[:concurrency]
         while len(batches) < concurrency:
             batch = claim_batch(conn, scan_id)
@@ -209,7 +204,7 @@ def _enrich(conn: sqlite3.Connection, root: Path, raw_path: Path, capture_path: 
                     active = conn.execute(
                         """
                         SELECT 1 FROM enrichment_items
-                        WHERE scan_id=? AND status='in_progress' AND batch_id=? LIMIT 1
+                        WHERE scan_id=? AND state='in_progress' AND batch_id=? LIMIT 1
                         """,
                         (scan_id, batch["batchId"]),
                     ).fetchone()
@@ -257,18 +252,13 @@ def _persist_capture(
 
 
 def _resume_uningested(conn: sqlite3.Connection, root: Path) -> dict[str, Any] | None:
-    max_attempts = int(os.environ.get("XRADAR_LUNA_MAX_ATTEMPTS", "3"))
     job = conn.execute(
         """
         SELECT j.* FROM enrichment_jobs j
         LEFT JOIN runs r ON r.scan_id=j.scan_id
-        WHERE r.id IS NULL AND NOT EXISTS (
-          SELECT 1 FROM enrichment_items i
-          WHERE i.scan_id=j.scan_id AND i.status='failed' AND i.attempts>=?
-        )
+        WHERE r.id IS NULL
         ORDER BY j.created_at LIMIT 1
-        """,
-        (max_attempts,),
+        """
     ).fetchone()
     if not job:
         return None
@@ -286,13 +276,18 @@ def _resume_uningested(conn: sqlite3.Connection, root: Path) -> dict[str, Any] |
     })
     enrichment = (
         {"scanId": scan_id, "status": "complete", "resumed": True}
-        if job["status"] == "complete"
+        if job["state"] in {"complete", "partial"}
         else _enrich(conn, root, raw_path, capture_path)
     )
     ingest, sync = _persist_capture(conn, root, raw_path=raw_path, capture_path=capture_path)
     if request_id:
         try:
-            complete_request(request_id, result_count=observed)
+            failed = int(enrichment.get("failedPosts") or 0)
+            complete_request(
+                request_id,
+                result_count=observed - failed,
+                error=(f"Partial ranking: {failed} post(s) retained unclassified" if failed else None),
+            )
         except Exception:
             pass
     return {
@@ -370,7 +365,12 @@ def run_cycle(conn: sqlite3.Connection, runtime_root: str | Path) -> dict[str, A
         ingest, sync = _persist_capture(conn, root, raw_path=raw_path, capture_path=capture_path)
         if request_id:
             try:
-                complete_request(request_id, result_count=observed)
+                failed = int(enrichment.get("failedPosts") or 0)
+                complete_request(
+                    request_id,
+                    result_count=observed - failed,
+                    error=(f"Partial ranking: {failed} post(s) retained unclassified" if failed else None),
+                )
             except Exception:
                 pass
         source_progress = {
