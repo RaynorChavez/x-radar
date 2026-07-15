@@ -6,7 +6,7 @@ import re
 import sqlite3
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -197,8 +197,9 @@ def _enrich(conn: sqlite3.Connection, root: Path, raw_path: Path, capture_path: 
         if not batches:
             break
         with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="xradar-luna") as executor:
-            futures = [(batch, executor.submit(rank_in_worker, batch)) for batch in batches]
-            for batch, future in futures:
+            futures = {executor.submit(rank_in_worker, batch): batch for batch in batches}
+            for future in as_completed(futures):
+                batch = futures[future]
                 try:
                     result = future.result()
                     submit_batch(conn, scan_id, result.payload)
