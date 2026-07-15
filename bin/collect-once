@@ -7,6 +7,17 @@ mkdir -p var/inbox public var/log
 
 CODEX_BIN="${XRADAR_CODEX_BIN:-$(command -v codex 2>/dev/null || printf '%s' "$HOME/.local/bin/codex")}"
 PROMPT="${XRADAR_AUTOMATION_PROMPT:-$ROOT/docs/pi-automation-prompt.md}"
+ORCHESTRATION="${XRADAR_COLLECTOR_ORCHESTRATION:-pipeline}"
+
+if [[ "$ORCHESTRATION" == "pipeline" ]]; then
+  exec /usr/bin/flock -n var/collector.lock \
+    /usr/bin/timeout 45m "$ROOT/bin/collect-pipeline"
+fi
+if [[ "$ORCHESTRATION" != "agent" ]]; then
+  echo "XRADAR_COLLECTOR_ORCHESTRATION must be pipeline or agent" >&2
+  exit 2
+fi
+
 CODEX_SAFETY_ARGS=(
   --sandbox workspace-write
   -c approval_policy=never

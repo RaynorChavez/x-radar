@@ -41,10 +41,19 @@ backfill from repeating the query that just failed. The raw envelope is
 untrusted input, and Luna may add evidence for observable bait patterns but
 cannot create a hard block or navigate an account that was not first observed.
 
-Luna emits an auditable five-part score breakdown through bounded enrichment
-batches. SQLite checkpoints accepted post results so malformed output retries
-only failed items. A deterministic finalizer merges accepted enrichment into
-the untouched raw capture; Luna never generates executable transformation code.
+Firefox writes an immutable raw JSON capture before ranking begins. A
+deterministic host orchestrator hashes that file, fetches one bounded batch from
+SQLite, and pipes only that batch to a fresh ephemeral Luna `xhigh` invocation.
+The invocation has a read-only sandbox, no project/user rules or configured MCP
+servers, and a strict output schema. It cannot run Firefox, select a different
+file, or mutate the database. SQLite checkpoints accepted post results so a
+malformed or timed-out response retries only failed items; a process restart
+resumes the unfinished enrichment job instead of scrolling X again.
+
+Luna emits an auditable five-part score breakdown. A deterministic finalizer
+merges accepted enrichment into the untouched raw capture; Luna never generates
+executable transformation code. Per-invocation duration and input, cached-input,
+output, and billable token counts are retained locally for operational analysis.
 SQLite and D1 store the component scores, rationales, and penalties alongside
 the final score. The host recalculates the final value and decision from fixed
 weights so a displayed total cannot drift from its breakdown; historical
