@@ -62,6 +62,11 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(dashboard, /Complete scan history/);
   assert.match(dashboard, /Load 100 more observations/);
   assert.match(dashboard, /24-HOUR VERIFICATION/);
+  assert.match(dashboard, /auth_required/);
+  assert.match(dashboard, /X login required/);
+  assert.match(dashboard, /Collection is paused/);
+  assert.match(dashboard, /role="alert"/);
+  assert.match(css, /\.auth-alert/);
   assert.match(dashboard, /Run discovery now/);
   assert.match(dashboard, /150-post discovery period/);
   assert.match(dashboard, /preferenceVersion/);
