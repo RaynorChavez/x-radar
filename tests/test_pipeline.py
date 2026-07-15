@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -69,7 +70,10 @@ class StatelessPipelineTests(unittest.TestCase):
                 results = results[:1]
             return LunaResult({"batchId": batch["batchId"], "results": results}, "inv", {}, 1)
 
-        with patch.dict("os.environ", {"XRADAR_LUNA_BATCH_ITEMS": "2", "XRADAR_LUNA_BATCH_CHARS": "20000"}), \
+        with patch.dict("os.environ", {
+            "XRADAR_LUNA_BATCH_ITEMS": "2", "XRADAR_LUNA_BATCH_CHARS": "20000",
+            "XRADAR_LUNA_CONCURRENCY": "1",
+        }), \
              patch("xradar.pipeline.rank_batch", side_effect=fake_rank):
             result = _enrich(self.conn, self.root, raw, output)
         self.assertEqual(["0", "1"], seen[0])
@@ -77,6 +81,39 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertNotIn("0", seen[1])
         self.assertEqual(3, result["posts"])
         self.assertTrue(output.exists())
+
+    def test_two_batches_rank_concurrently(self):
+        raw = self.root / "var" / "inbox" / "raw-concurrent.json"
+        output = self.root / "var" / "inbox" / "capture-concurrent.json"
+        raw.write_text(json.dumps({
+            "scan_id": "concurrent", "captured_at": "2026-07-15T00:00:00Z", "source": "x-home",
+            "posts": [{
+                "post_id": str(index), "url": f"https://x.com/lab/status/{index}",
+                "handle": "@lab", "text": f"Post {index}",
+            } for index in range(4)],
+        }))
+        barrier = threading.Barrier(2, timeout=3)
+        thread_names: set[str] = set()
+
+        def fake_rank(conn, batch, root):
+            thread_names.add(threading.current_thread().name)
+            barrier.wait()
+            return LunaResult({
+                "batchId": batch["batchId"],
+                "results": [{
+                    "post_id": post["post_id"], "topic_matches": [],
+                    "score_components": components(), "reasons": ["Concrete information."],
+                    "account_signals": [],
+                } for post in batch["posts"]],
+            }, "inv", {}, 1)
+
+        with patch.dict("os.environ", {
+            "XRADAR_LUNA_BATCH_ITEMS": "2", "XRADAR_LUNA_BATCH_CHARS": "20000",
+            "XRADAR_LUNA_CONCURRENCY": "2",
+        }), patch("xradar.pipeline.rank_batch", side_effect=fake_rank):
+            result = _enrich(self.conn, self.root, raw, output)
+        self.assertEqual(4, result["posts"])
+        self.assertEqual(2, len(thread_names))
 
 
 if __name__ == "__main__":

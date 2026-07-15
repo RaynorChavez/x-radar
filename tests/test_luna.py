@@ -47,12 +47,14 @@ class LunaRunnerTests(unittest.TestCase):
         self.assertIn("--ignore-rules", command)
         self.assertEqual("read-only", command[command.index("--sandbox") + 1])
         self.assertEqual("gpt-5.6-luna", command[command.index("-m") + 1])
+        self.assertIn("model_reasoning_effort='medium'", command)
         self.assertEqual(250, result.usage["billable_tokens"])
         row = self.conn.execute("SELECT * FROM luna_invocations").fetchone()
         self.assertEqual((1000, 800, 50, 250, "complete"), (
             row["input_tokens"], row["cached_input_tokens"], row["output_tokens"],
             row["billable_tokens"], row["status"],
         ))
+        self.assertEqual("medium", row["reasoning_effort"])
         self.assertEqual([], list((self.root / "var" / "luna").iterdir()))
 
     def test_timeout_is_durable_and_does_not_leave_batch_files(self):

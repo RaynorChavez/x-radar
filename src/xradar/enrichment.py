@@ -165,63 +165,115 @@ def _ranking_input(post: dict[str, Any]) -> dict[str, Any]:
     return {field: post.get(field) for field in fields if field in post}
 
 
-def next_batch(conn: sqlite3.Connection, scan_id: str) -> dict[str, Any]:
-    job = _job_row(conn, scan_id)
-    if job["status"] == "complete":
-        return {**_job_summary(conn, scan_id), "complete": True, "posts": []}
-    payload = _verified_raw(job)
-    posts = payload["posts"]
-    rows = list(conn.execute(
-        """
-        SELECT * FROM enrichment_items WHERE scan_id=? AND status='in_progress'
-        ORDER BY observed_index
-        """,
-        (scan_id,),
-    ))
+def _batch_payload(
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    raw: dict[str, Any],
+    rows: list[sqlite3.Row],
+) -> dict[str, Any]:
     if not rows:
-        candidates = list(conn.execute(
-            """
-            SELECT * FROM enrichment_items WHERE scan_id=? AND status IN ('failed','pending')
-            ORDER BY CASE status WHEN 'failed' THEN 0 ELSE 1 END,observed_index
-            """,
-            (scan_id,),
-        ))
-        selected: list[sqlite3.Row] = []
-        chars = 0
-        for row in candidates:
-            item = _ranking_input(posts[int(row["observed_index"])])
-            item_chars = len(json.dumps(item, ensure_ascii=False))
-            if selected and (len(selected) >= int(job["batch_max_items"]) or chars + item_chars > int(job["batch_max_chars"])):
-                break
-            selected.append(row)
-            chars += item_chars
-        rows = selected
-        if not rows:
-            conn.execute("UPDATE enrichment_jobs SET status='ready',updated_at=? WHERE scan_id=?", (utcnow(), scan_id))
-            conn.commit()
-            return {**_job_summary(conn, scan_id), "complete": False, "ready": True, "posts": []}
-        batch_id = str(uuid.uuid4())
-        conn.executemany(
-            "UPDATE enrichment_items SET status='in_progress',batch_id=?,updated_at=? WHERE scan_id=? AND post_id=?",
-            ((batch_id, utcnow(), scan_id, row["post_id"]) for row in rows),
-        )
-        conn.execute("UPDATE enrichment_jobs SET status='running',updated_at=? WHERE scan_id=?", (utcnow(), scan_id))
-        conn.commit()
-        rows = list(conn.execute(
-            "SELECT * FROM enrichment_items WHERE scan_id=? AND batch_id=? ORDER BY observed_index",
-            (scan_id, batch_id),
-        ))
-    batch_id = str(rows[0]["batch_id"])
+        raise ValueError("cannot build an empty enrichment batch")
+    batch_id = str(rows[0]["batch_id"] or "")
+    if not batch_id or any(str(row["batch_id"] or "") != batch_id for row in rows):
+        raise ValueError("enrichment rows do not share one batch_id")
+    summary = _job_summary(conn, str(job["scan_id"]))
     return {
         "schemaVersion": 1,
-        "scanId": scan_id,
+        "scanId": str(job["scan_id"]),
         "batchId": batch_id,
         "rankingVersion": job["ranking_version"],
         "preference": json.loads(job["preference_json"]),
         "allowedTopics": json.loads(job["allowed_topics_json"]),
-        "posts": [_ranking_input(posts[int(row["observed_index"])]) for row in rows],
-        "remainingAfterBatch": _job_summary(conn, scan_id)["pending"] + _job_summary(conn, scan_id)["failed"],
+        "posts": [_ranking_input(raw["posts"][int(row["observed_index"])]) for row in rows],
+        "remainingAfterBatch": summary["pending"] + summary["failed"],
     }
+
+
+def active_batches(conn: sqlite3.Connection, scan_id: str) -> list[dict[str, Any]]:
+    """Return durable leased batches without claiming additional work."""
+    job = _job_row(conn, scan_id)
+    if job["status"] == "complete":
+        return []
+    raw = _verified_raw(job)
+    batch_ids = [
+        str(row["batch_id"])
+        for row in conn.execute(
+            """
+            SELECT batch_id,MIN(observed_index) first_index
+            FROM enrichment_items
+            WHERE scan_id=? AND status='in_progress' AND batch_id IS NOT NULL
+            GROUP BY batch_id ORDER BY first_index
+            """,
+            (scan_id,),
+        )
+    ]
+    batches = []
+    for batch_id in batch_ids:
+        rows = list(conn.execute(
+            """
+            SELECT * FROM enrichment_items
+            WHERE scan_id=? AND status='in_progress' AND batch_id=?
+            ORDER BY observed_index
+            """,
+            (scan_id, batch_id),
+        ))
+        batches.append(_batch_payload(conn, job, raw, rows))
+    return batches
+
+
+def claim_batch(conn: sqlite3.Connection, scan_id: str) -> dict[str, Any]:
+    """Lease one new batch even when another batch is already in progress."""
+    job = _job_row(conn, scan_id)
+    if job["status"] == "complete":
+        return {**_job_summary(conn, scan_id), "complete": True, "posts": []}
+    raw = _verified_raw(job)
+    candidates = list(conn.execute(
+        """
+        SELECT * FROM enrichment_items WHERE scan_id=? AND status IN ('failed','pending')
+        ORDER BY CASE status WHEN 'failed' THEN 0 ELSE 1 END,observed_index
+        """,
+        (scan_id,),
+    ))
+    selected: list[sqlite3.Row] = []
+    chars = 0
+    for row in candidates:
+        item = _ranking_input(raw["posts"][int(row["observed_index"])])
+        item_chars = len(json.dumps(item, ensure_ascii=False))
+        if selected and (
+            len(selected) >= int(job["batch_max_items"])
+            or chars + item_chars > int(job["batch_max_chars"])
+        ):
+            break
+        selected.append(row)
+        chars += item_chars
+    if not selected:
+        waiting = bool(active_batches(conn, scan_id))
+        if not waiting:
+            conn.execute("UPDATE enrichment_jobs SET status='ready',updated_at=? WHERE scan_id=?", (utcnow(), scan_id))
+            conn.commit()
+        return {
+            **_job_summary(conn, scan_id), "complete": False,
+            "ready": not waiting, "waiting": waiting, "posts": [],
+        }
+    batch_id = str(uuid.uuid4())
+    now = utcnow()
+    conn.executemany(
+        "UPDATE enrichment_items SET status='in_progress',batch_id=?,updated_at=? WHERE scan_id=? AND post_id=?",
+        ((batch_id, now, scan_id, row["post_id"]) for row in selected),
+    )
+    conn.execute("UPDATE enrichment_jobs SET status='running',updated_at=? WHERE scan_id=?", (now, scan_id))
+    conn.commit()
+    rows = list(conn.execute(
+        "SELECT * FROM enrichment_items WHERE scan_id=? AND batch_id=? ORDER BY observed_index",
+        (scan_id, batch_id),
+    ))
+    return _batch_payload(conn, job, raw, rows)
+
+
+def next_batch(conn: sqlite3.Connection, scan_id: str) -> dict[str, Any]:
+    """Compatibility API: resume the oldest lease, otherwise claim one batch."""
+    batches = active_batches(conn, scan_id)
+    return batches[0] if batches else claim_batch(conn, scan_id)
 
 
 def _clean_reasons(value: Any) -> list[str]:
@@ -312,10 +364,21 @@ def _validate_result(result: Any, raw_post: dict[str, Any], allowed: dict[str, s
     }
 
 
-def fail_active_batch(conn: sqlite3.Connection, scan_id: str, error: str) -> dict[str, Any]:
+def fail_active_batch(
+    conn: sqlite3.Connection,
+    scan_id: str,
+    error: str,
+    *,
+    batch_id: str | None = None,
+) -> dict[str, Any]:
+    where = "scan_id=? AND status='in_progress'"
+    parameters: tuple[Any, ...] = (scan_id,)
+    if batch_id:
+        where += " AND batch_id=?"
+        parameters += (batch_id,)
     rows = list(conn.execute(
-        "SELECT post_id FROM enrichment_items WHERE scan_id=? AND status='in_progress'",
-        (scan_id,),
+        f"SELECT post_id FROM enrichment_items WHERE {where}",
+        parameters,
     ))
     if not rows:
         raise ValueError("enrichment job has no active batch")
@@ -333,21 +396,25 @@ def fail_active_batch(conn: sqlite3.Connection, scan_id: str, error: str) -> dic
 
 
 def submit_batch(conn: sqlite3.Connection, scan_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    job = _job_row(conn, scan_id)
     if not isinstance(payload, dict):
-        return fail_active_batch(conn, scan_id, "submission must be a JSON object")
+        raise ValueError("submission must be a JSON object")
     batch_id = str(payload.get("batchId") or payload.get("batch_id") or "").strip()
+    if not batch_id:
+        raise ValueError("submission requires batchId")
+    job = _job_row(conn, scan_id)
     rows = list(conn.execute(
-        "SELECT * FROM enrichment_items WHERE scan_id=? AND status='in_progress' ORDER BY observed_index",
-        (scan_id,),
+        """
+        SELECT * FROM enrichment_items
+        WHERE scan_id=? AND status='in_progress' AND batch_id=?
+        ORDER BY observed_index
+        """,
+        (scan_id, batch_id),
     ))
     if not rows:
-        raise ValueError("enrichment job has no active batch")
-    if not batch_id or any(str(row["batch_id"]) != batch_id for row in rows):
-        raise ValueError("batchId does not match the active batch")
+        raise ValueError("batchId does not match an active batch")
     results = payload.get("results")
     if not isinstance(results, list):
-        return fail_active_batch(conn, scan_id, "results must be an array")
+        return fail_active_batch(conn, scan_id, "results must be an array", batch_id=batch_id)
     mapped: dict[str, Any] = {}
     duplicate_ids: set[str] = set()
     for result in results:

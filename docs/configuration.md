@@ -45,7 +45,9 @@ to restore the previous one-session Codex orchestrator without changing the
 database or acquisition policy. Optional operational bounds are
 `XRADAR_LUNA_BATCH_ITEMS`, `XRADAR_LUNA_BATCH_CHARS`,
 `XRADAR_LUNA_BATCH_TIMEOUT_SECONDS`, `XRADAR_LUNA_QUERY_TIMEOUT_SECONDS`, and
-`XRADAR_LUNA_MAX_ATTEMPTS`. Inspect local call usage with
+`XRADAR_LUNA_MAX_ATTEMPTS`. `XRADAR_LUNA_CONCURRENCY` defaults to `2` and may
+be set from `1` to `4`; each concurrent call owns a separate durable batch lease.
+Inspect local call usage with
 `x-radar --db var/x-radar.sqlite luna-usage [--scan-id UUID]`.
 
 The Sites runtime additionally holds `XRADAR_SEMANTIC_UPSTREAM_URL`,
@@ -53,6 +55,6 @@ The Sites runtime additionally holds `XRADAR_SEMANTIC_UPSTREAM_URL`,
 `XRADAR_SEMANTIC_HMAC_KEYS`. These are server-only values. Use a different HMAC
 secret from the ingest token and rotate by temporarily retaining both key IDs.
 
-The curator model is intentionally fixed to `gpt-5.6-luna` with xhigh reasoning
+The curator model is intentionally fixed to `gpt-5.6-luna` with medium reasoning
 for query expansion and ranking. `bin/doctor --live-model-check` verifies that the installed
 Codex CLI is logged in and that the subscription can access that model.
