@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from xradar.db import connect
-from xradar.luna import RANKING_SCHEMA, invoke
+from xradar.luna import RANKING_SCHEMA, invoke, rank_batch
 
 
 class LunaRunnerTests(unittest.TestCase):
@@ -67,6 +67,29 @@ class LunaRunnerTests(unittest.TestCase):
         row = self.conn.execute("SELECT status,error FROM luna_invocations").fetchone()
         self.assertEqual("timeout", row["status"])
         self.assertEqual([], list((self.root / "var" / "luna").iterdir()))
+
+    def test_ranking_schema_enumerates_batch_post_and_topic_ids(self):
+        captured = {}
+
+        def fake_invoke(conn, payload, **kwargs):
+            captured["schema"] = kwargs["schema"]
+            return object()
+
+        batch = {
+            "scanId": "scan", "batchId": "batch-1",
+            "allowedTopics": {"topic-b": "Robotics", "topic-a": "AI"},
+            "posts": [{"post_id": "post-1"}, {"post_id": "post-2"}],
+        }
+        with patch("xradar.luna.invoke", side_effect=fake_invoke):
+            rank_batch(self.conn, batch, self.root)
+        schema = captured["schema"]
+        self.assertEqual(["batch-1"], schema["properties"]["batchId"]["enum"])
+        results = schema["properties"]["results"]
+        self.assertEqual((2, 2), (results["minItems"], results["maxItems"]))
+        properties = results["items"]["properties"]
+        self.assertEqual(["post-1", "post-2"], properties["post_id"]["enum"])
+        topic = properties["topic_matches"]["items"]["properties"]["topic_key"]
+        self.assertEqual(["topic-a", "topic-b"], topic["enum"])
 
 
 if __name__ == "__main__":
