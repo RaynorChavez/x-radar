@@ -159,6 +159,10 @@ def parser() -> argparse.ArgumentParser:
     enrichment_finalize.add_argument("scan_id")
     enrichment_finalize.add_argument("--output")
 
+    luna_usage = commands.add_parser("luna-usage")
+    luna_usage.add_argument("--scan-id")
+    luna_usage.add_argument("--limit", type=int, default=25)
+
     site_ingest = commands.add_parser("site-ingest")
     site_ingest.add_argument("capture")
 
@@ -447,4 +451,19 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(job_status(conn, args.scan_id), indent=2))
     elif args.command == "enrichment-finalize":
         print(json.dumps(finalize_job(conn, args.scan_id, output=args.output), indent=2))
+    elif args.command == "luna-usage":
+        where = "WHERE scan_id=?" if args.scan_id else ""
+        parameters = (args.scan_id, args.limit) if args.scan_id else (args.limit,)
+        rows = conn.execute(
+            f"""
+            SELECT invocation_id AS invocationId,scan_id AS scanId,batch_id AS batchId,
+              purpose,model,reasoning_effort AS reasoningEffort,status,
+              input_tokens AS inputTokens,cached_input_tokens AS cachedInputTokens,
+              output_tokens AS outputTokens,billable_tokens AS billableTokens,
+              duration_ms AS durationMs,error,created_at AS createdAt
+            FROM luna_invocations {where} ORDER BY id DESC LIMIT ?
+            """,
+            parameters,
+        )
+        print(json.dumps([dict(row) for row in rows], indent=2))
     return 0

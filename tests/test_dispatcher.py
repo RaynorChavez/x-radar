@@ -25,6 +25,9 @@ class DispatcherServiceTests(unittest.TestCase):
 
     def test_collector_defaults_to_networked_workspace_sandbox(self):
         collector = (ROOT / "bin" / "collect-once").read_text()
+        self.assertIn('XRADAR_COLLECTOR_ORCHESTRATION:-pipeline', collector)
+        self.assertIn('"$ROOT/bin/collect-pipeline"', collector)
+        self.assertIn('ORCHESTRATION" != "agent"', collector)
         self.assertIn("--sandbox workspace-write", collector)
         self.assertIn("approval_policy=never", collector)
         self.assertIn("sandbox_workspace_write.network_access=true", collector)

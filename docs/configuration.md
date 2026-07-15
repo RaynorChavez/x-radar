@@ -10,10 +10,11 @@ X Radar has one codebase and two runtime modes.
 | `XRADAR_SITE_BYPASS_TOKEN` | private Sites bypass token | empty |
 | `XRADAR_HOST` | collector label, such as `pi` | machine label |
 | `XRADAR_ACQUISITION_MODE` | `mixed` normally; `legacy` for rollback | same |
+| `XRADAR_COLLECTOR_ORCHESTRATION` | `pipeline` normally; `agent` for rollback | same |
 | `XRADAR_GECKODRIVER` | optional absolute geckodriver path for a dedicated service user | usually omit |
 | `XRADAR_FIREFOX` | optional absolute Firefox binary path | usually omit |
 | `XRADAR_CODEX_BIN` | optional absolute Codex CLI path | same |
-| `XRADAR_CODEX_UNSANDBOXED` | keep `0`; use `1` only inside an independent host sandbox | same |
+| `XRADAR_CODEX_UNSANDBOXED` | legacy `agent` mode only; normally keep `0` | same |
 | `XRADAR_SEMANTIC_PYTHON` | Python from the isolated semantic environment | same environment Python |
 | `XRADAR_EMBEDDING_MODEL_DIR` | private host model directory | local model directory |
 | `XRADAR_SEMANTIC_HMAC_KEYS` | JSON key-id to secret map; required for Funnel | omit only with explicit local mode |
@@ -36,11 +37,22 @@ search, known topic accounts, and bounded exploration. Setting
 `XRADAR_ACQUISITION_MODE=legacy` restores the earlier single-target 100-post
 Home behavior without changing or deleting topic memory.
 
+`XRADAR_COLLECTOR_ORCHESTRATION=pipeline` separates deterministic Firefox
+collection from Luna ranking. Firefox first writes the complete raw capture;
+the host then sends bounded batches (24 posts or 60,000 characters by default)
+to fresh ephemeral Luna calls and validates every response. Set it to `agent`
+to restore the previous one-session Codex orchestrator without changing the
+database or acquisition policy. Optional operational bounds are
+`XRADAR_LUNA_BATCH_ITEMS`, `XRADAR_LUNA_BATCH_CHARS`,
+`XRADAR_LUNA_BATCH_TIMEOUT_SECONDS`, `XRADAR_LUNA_QUERY_TIMEOUT_SECONDS`, and
+`XRADAR_LUNA_MAX_ATTEMPTS`. Inspect local call usage with
+`x-radar --db var/x-radar.sqlite luna-usage [--scan-id UUID]`.
+
 The Sites runtime additionally holds `XRADAR_SEMANTIC_UPSTREAM_URL`,
 `XRADAR_SEMANTIC_HMAC_ACTIVE_KEY_ID`, and the matching
 `XRADAR_SEMANTIC_HMAC_KEYS`. These are server-only values. Use a different HMAC
 secret from the ingest token and rotate by temporarily retaining both key IDs.
 
 The curator model is intentionally fixed to `gpt-5.6-luna` with xhigh reasoning
-for collection runs. `bin/doctor --live-model-check` verifies that the installed
+for query expansion and ranking. `bin/doctor --live-model-check` verifies that the installed
 Codex CLI is logged in and that the subscription can access that model.

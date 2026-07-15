@@ -147,9 +147,12 @@ dashboard supplies a stable monogram until the account is observed again.
 
 ## Ranking
 
-Ranking is checkpointed in bounded batches. Luna never rewrites the raw capture
-or generates executable transformation code. `enrichment-next` supplies the
-exact posts and allowed topic keys for one batch. `enrichment-submit` accepts:
+Ranking starts only after Firefox has atomically written the raw capture.
+Ranking is checkpointed in bounded batches. The deterministic host calls
+`enrichment-next`, then pipes only that returned JSON to a fresh ephemeral Luna
+invocation with a strict output schema. Luna never chooses a capture path,
+rewrites the raw capture, retains a growing session, or generates executable
+transformation code. `enrichment-submit` accepts:
 
 ```json
 {

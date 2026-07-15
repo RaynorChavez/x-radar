@@ -20,6 +20,7 @@ REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RUNTIME_FILES = (
     "bin/backup",
     "bin/collect-once",
+    "bin/collect-pipeline",
     "bin/dispatch-queued",
     "bin/doctor",
     "bin/embed-pending",

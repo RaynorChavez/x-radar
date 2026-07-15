@@ -252,6 +252,26 @@ CREATE TABLE IF NOT EXISTS enrichment_items (
 );
 CREATE INDEX IF NOT EXISTS enrichment_items_next_idx
     ON enrichment_items(scan_id,status,observed_index);
+
+CREATE TABLE IF NOT EXISTS luna_invocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invocation_id TEXT NOT NULL UNIQUE,
+    scan_id TEXT,
+    batch_id TEXT,
+    purpose TEXT NOT NULL,
+    model TEXT NOT NULL,
+    reasoning_effort TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('complete','error','timeout')),
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    billable_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS luna_invocations_scan_idx
+    ON luna_invocations(scan_id,created_at);
 """
 
 
