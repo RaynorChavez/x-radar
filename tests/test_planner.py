@@ -53,22 +53,50 @@ class PeriodPlannerTests(unittest.TestCase):
 
     def test_query_pack_is_validated_and_cached(self):
         apply_preferences(self.conn, instructions="", topics=["category theory"], version=1)
-        values = set_query_pack(self.conn, "category theory", ["category theory", "higher categories"], 1)
+        values = set_query_pack(self.conn, "category theory", [
+            '"category theory"',
+            '("category theory" OR "higher categories") (paper OR result)',
+        ], 1)
         self.assertEqual([
-            {"kind": "canonical", "query": "category theory"},
-            {"kind": "technical", "query": "higher categories"},
+            {"kind": "canonical", "query": '"category theory"'},
+            {"kind": "technical", "query": '("category theory" OR "higher categories") (paper OR result)'},
         ], values)
         self.assertIn("f=live", search_url(values[0]["query"]))
         with self.assertRaises(ValueError):
             safe_query("https://example.com")
 
+    def test_query_contract_accepts_or_groups_and_rejects_keyword_bags(self):
+        self.assertEqual(
+            '(AI OR AGI OR ASI) (research OR paper OR benchmark)',
+            safe_query('(AI OR AGI OR ASI) (research OR paper OR benchmark)'),
+        )
+        for invalid in (
+            "AI scaling laws mechanistic interpretability",
+            "AI or AGI",
+            "(AI OR AGI",
+            '"artificial intelligence',
+            "AI OR",
+            "from:demishassabis AI",
+        ):
+            with self.subTest(query=invalid), self.assertRaises(ValueError):
+                safe_query(invalid)
+
+    def test_fallback_pack_compiles_slash_topics_to_x_native_queries(self):
+        apply_preferences(self.conn, instructions="", topics=["AI / AGI / ASI research"], version=1)
+        row = self.conn.execute("SELECT query_pack_json FROM topic_state WHERE active=1").fetchone()
+        self.assertEqual([
+            {"kind": "canonical", "query": "(AI OR AGI OR ASI)"},
+            {"kind": "technical", "query": "(AI OR AGI OR ASI) (research OR paper OR benchmark)"},
+            {"kind": "adjacent", "query": "(AI OR AGI OR ASI) (findings OR analysis OR result)"},
+        ], json.loads(row["query_pack_json"]))
+
     def test_query_pack_cli_accepts_structured_file_without_shell_interpolation(self):
         apply_preferences(self.conn, instructions="", topics=["robotics"], version=4)
         pack = Path(self.temp.name) / "pack.json"
         pack.write_text(json.dumps({"queries": [
-            {"kind": "canonical", "query": "robotics research"},
-            {"kind": "technical", "query": "robot manipulation benchmark"},
-            {"kind": "adjacent", "query": "embodied AI experiments"},
+            {"kind": "canonical", "query": "robotics"},
+            {"kind": "technical", "query": "robotics (manipulation OR benchmark)"},
+            {"kind": "adjacent", "query": "robotics (embodied OR experiment)"},
         ]}))
         self.conn.commit()
         self.conn.close()
@@ -82,12 +110,31 @@ class PeriodPlannerTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual(["canonical", "technical", "adjacent"], [item["kind"] for item in result["queries"]])
 
+    def test_query_refresh_cli_marks_active_packs_stale(self):
+        apply_preferences(self.conn, instructions="", topics=["robotics", "cooking"], version=4)
+        self.conn.execute("UPDATE topic_state SET query_pack_revision=4")
+        self.conn.commit()
+        self.conn.close()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            cli_main([
+                "--db", str(Path(self.temp.name) / "radar.sqlite"), "topic-queries-refresh",
+                "--topic", "robotics",
+            ])
+        self.conn = connect(Path(self.temp.name) / "radar.sqlite")
+        self.assertEqual(1, json.loads(output.getvalue())["refreshed"])
+        revisions = {
+            row["label"]: row["query_pack_revision"]
+            for row in self.conn.execute("SELECT label,query_pack_revision FROM topic_state")
+        }
+        self.assertEqual({"robotics": -1, "cooking": 4}, revisions)
+
     def test_structured_queries_are_distinct_across_primary_exploration_and_backfill(self):
         apply_preferences(self.conn, instructions="", topics=["AI / AGI / ASI research"], version=1)
         set_query_pack(self.conn, "AI / AGI / ASI research", [
-            {"kind": "canonical", "query": "artificial general intelligence research"},
-            {"kind": "technical", "query": "AGI evals alignment scaling laws benchmark"},
-            {"kind": "adjacent", "query": "frontier model capabilities research paper"},
+            {"kind": "canonical", "query": "(AI OR AGI OR ASI)"},
+            {"kind": "technical", "query": "(AGI OR ASI) (evals OR benchmark)"},
+            {"kind": "adjacent", "query": '("frontier model" OR AGI) (capabilities OR paper)'},
         ], 1)
         plan = build_period_plan(self.conn)
         searches = [item for item in [*plan["targets"], *plan["backfill_targets"]] if item.get("query")]
@@ -99,9 +146,9 @@ class PeriodPlannerTests(unittest.TestCase):
         apply_preferences(self.conn, instructions="", topics=["robotics"], version=1)
         key = self.conn.execute("SELECT topic_key FROM topic_state WHERE label='robotics'").fetchone()[0]
         set_query_pack(self.conn, "robotics", [
-            {"kind": "canonical", "query": "robotics research"},
-            {"kind": "technical", "query": "robot manipulation benchmark"},
-            {"kind": "adjacent", "query": "embodied AI experiments"},
+            {"kind": "canonical", "query": "robotics"},
+            {"kind": "technical", "query": "robotics (manipulation OR benchmark)"},
+            {"kind": "adjacent", "query": "robotics (embodied OR experiment)"},
         ], 1)
         from xradar.db import ingest_capture
         ingest_capture(self.conn, {
@@ -109,13 +156,13 @@ class PeriodPlannerTests(unittest.TestCase):
             "acquisitions": [{
                 "id": "failed", "kind": "topic_search", "url": "https://x.com/search?q=robotics",
                 "topic_key": key, "topic": "robotics", "query_kind": "canonical",
-                "query": "robotics research", "status": "error", "observed": 0, "unique": 0,
+                "query": "robotics", "status": "error", "observed": 0, "unique": 0,
             }],
             "posts": [],
         })
         plan = build_period_plan(self.conn)
         self.assertNotIn(
-            "robotics research",
+            "robotics",
             [item.get("query") for item in [*plan["targets"], *plan["backfill_targets"]]],
         )
         memory = self.conn.execute(

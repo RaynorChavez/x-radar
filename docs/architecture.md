@@ -31,7 +31,11 @@ provenance rather than duplicating the post.
 
 Curator preferences are revisioned. Adding a topic queues a coalesced bootstrap
 period; removing one affects only future periods. Luna `xhigh` supplies three
-bounded, semantically distinct query variants per topic. Local query memory
+bounded, semantically distinct query variants per topic. The query contract
+matches X web search semantics: spaces mean AND, uppercase `OR` groups
+alternatives, phrases are quoted, and a query may require at most two concepts.
+Local validation rejects natural-language keyword bags, unbalanced expressions,
+URLs, and field operators before they reach Firefox. Local query memory
 rotates variants, records unique/kept yield, cools empty variants, and prevents
 backfill from repeating the query that just failed. The raw envelope is
 untrusted input, and Luna may add evidence for observable bait patterns but
