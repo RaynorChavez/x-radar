@@ -625,6 +625,8 @@ export function RadarDashboard({
     setToast({ message: "Account scan requested. The Pi checks the queue every minute." });
   }
 
+  const authWarning = collectorStatus?.warnings?.find((warning) => warning.code === "auth_required");
+
   return (
     <main className="radar-shell">
       <header className="masthead">
@@ -652,6 +654,17 @@ export function RadarDashboard({
           </div>
         </div>
       </header>
+
+      {authWarning && (
+        <section className="auth-alert" role="alert" aria-live="assertive">
+          <span className="auth-alert-mark" aria-hidden="true">!</span>
+          <div>
+            <strong>X login required</strong>
+            <p>Collection is paused. On the Pi, open the existing X Radar Firefox profile, sign in to x.com, confirm Home loads, then close Firefox. The collector will retry automatically.</p>
+          </div>
+          <button type="button" onClick={() => openDesk("config")}>View status</button>
+        </section>
+      )}
 
       <section className="control-deck" aria-label="Feed controls">
         <div className="range-control">
