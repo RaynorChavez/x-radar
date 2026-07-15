@@ -30,6 +30,12 @@ scrolls and six minutes; backfill targets are capped at six scrolls. A target
 failure is recorded and does not invalidate posts already collected unless the
 failure is `AUTH_REQUIRED`.
 
+Topic-search plans contain only locally validated X web queries. A space is an
+implicit AND, while alternatives use uppercase `OR` inside balanced
+parentheses. Each query may require no more than two concepts after expanding
+its alternatives. This deliberately favors broad, high-recall discovery over
+long keyword conjunctions that commonly return an empty or failed X timeline.
+
 ## Capture envelope
 
 Write one JSON object with this shape:

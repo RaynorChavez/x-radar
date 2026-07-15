@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,7 +29,7 @@ from .site_client import (
     claim_request, complete_request, ingest_capture as ingest_site_capture,
     mutations, pending_requests, report_progress, send_event, send_heartbeat,
 )
-from .planner import apply_preferences, build_period_plan, set_query_pack
+from .planner import apply_preferences, build_period_plan, set_query_pack, topic_key
 from .enrichment import (
     fail_active_batch,
     finalize_job,
@@ -131,6 +132,9 @@ def parser() -> argparse.ArgumentParser:
     queries.add_argument("--adjacent")
     queries.add_argument("--pack-file")
     queries.add_argument("--revision", type=int, required=True)
+
+    refresh_queries = commands.add_parser("topic-queries-refresh")
+    refresh_queries.add_argument("--topic")
 
     commands.add_parser("topic-memory")
 
@@ -358,6 +362,19 @@ def main(argv: list[str] | None = None) -> int:
         values = set_query_pack(conn, args.topic, supplied, args.revision)
         conn.commit()
         print(json.dumps({"topic": args.topic, "queries": values, "revision": args.revision}))
+    elif args.command == "topic-queries-refresh":
+        if args.topic:
+            key = args.topic if re.fullmatch(r"[0-9a-f]{16}", args.topic) else topic_key(args.topic)
+            updated = conn.execute(
+                "UPDATE topic_state SET query_pack_revision=-1 WHERE active=1 AND topic_key=?",
+                (key,),
+            ).rowcount
+            if not updated:
+                raise ValueError(f"unknown active topic: {args.topic}")
+        else:
+            updated = conn.execute("UPDATE topic_state SET query_pack_revision=-1 WHERE active=1").rowcount
+        conn.commit()
+        print(json.dumps({"refreshed": updated, "topic": args.topic}))
     elif args.command == "topic-memory":
         rows = conn.execute("""
             SELECT t.label topic,m.handle,m.relevant_observations,m.kept_posts,

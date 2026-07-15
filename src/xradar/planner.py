@@ -15,6 +15,7 @@ SOURCE_BUDGETS = {"home": 60, "topic_search": 45, "known_account": 30, "explorat
 MAX_ACTIVE_TOPICS = 6
 MAX_QUERY_LENGTH = 128
 _HANDLE = re.compile(r"^@[A-Za-z0-9_]{1,15}$")
+_GENERIC_TOPIC_WORDS = {"research", "papers", "paper", "news", "updates"}
 
 
 def utcnow() -> str:
@@ -26,12 +27,102 @@ def topic_key(label: str) -> str:
     return hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
 
+def _query_tokens(query: str) -> list[str]:
+    tokens: list[str] = []
+    index = 0
+    while index < len(query):
+        if query[index].isspace():
+            index += 1
+            continue
+        if query[index] in "()":
+            tokens.append(query[index])
+            index += 1
+            continue
+        if query[index] == '"':
+            end = index + 1
+            escaped = False
+            while end < len(query):
+                character = query[end]
+                if character == '"' and not escaped:
+                    break
+                escaped = character == "\\" and not escaped
+                if character != "\\":
+                    escaped = False
+                end += 1
+            if end >= len(query):
+                raise ValueError("query contains an unbalanced quote")
+            if end == index + 1:
+                raise ValueError("query contains an empty quoted phrase")
+            tokens.append(query[index:end + 1])
+            index = end + 1
+            continue
+        end = index
+        while end < len(query) and not query[end].isspace() and query[end] not in "()":
+            end += 1
+        token = query[index:end]
+        if token.casefold() == "or" and token != "OR":
+            raise ValueError("X boolean operators must use uppercase OR")
+        tokens.append(token)
+        index = end
+    return tokens
+
+
+def _validate_query_expression(tokens: list[str]) -> None:
+    position = 0
+
+    def parse_expression(*, nested: bool = False) -> int:
+        nonlocal position
+        alternatives: list[int] = []
+        required = 0
+        expecting_factor = True
+        while position < len(tokens):
+            token = tokens[position]
+            if token == ")":
+                if not nested:
+                    raise ValueError("query contains an unmatched closing parenthesis")
+                break
+            if token == "OR":
+                if expecting_factor:
+                    raise ValueError("query contains a misplaced OR")
+                alternatives.append(required)
+                required = 0
+                expecting_factor = True
+                position += 1
+                continue
+            if token == "(":
+                position += 1
+                if position < len(tokens) and tokens[position] == ")":
+                    raise ValueError("query contains an empty group")
+                factor_required = parse_expression(nested=True)
+                if position >= len(tokens) or tokens[position] != ")":
+                    raise ValueError("query contains an unbalanced parenthesis")
+                position += 1
+            else:
+                factor_required = 1
+                position += 1
+            required += factor_required
+            if required > 2:
+                raise ValueError("query may require at most two concepts; combine alternatives with uppercase OR")
+            expecting_factor = False
+        if expecting_factor:
+            raise ValueError("query cannot end with OR")
+        alternatives.append(required)
+        return max(alternatives)
+
+    parse_expression()
+    if position != len(tokens):
+        raise ValueError("query contains an unmatched closing parenthesis")
+
+
 def safe_query(value: str) -> str:
     query = " ".join(str(value).replace("\x00", " ").split()).strip()
     if not query or len(query) > MAX_QUERY_LENGTH or "http://" in query.casefold() or "https://" in query.casefold():
         raise ValueError("query must be 1-128 characters and must not contain a URL")
     if any(ord(character) < 32 for character in query):
         raise ValueError("query contains a control character")
+    if ":" in query:
+        raise ValueError("query may not contain API-only or field operators")
+    _validate_query_expression(_query_tokens(query))
     return query
 
 
@@ -81,18 +172,31 @@ def _target(kind: str, url: str, quota: int, *, topic: sqlite3.Row | None = None
 
 
 def _fallback_query_pack(label: str) -> list[dict[str, str]]:
-    canonical = re.sub(r"[^A-Za-z0-9_+#.-]+", " ", label).strip()
-    canonical = " ".join(canonical.split()) or label
-    base = " ".join(word for word in canonical.split() if word.casefold() not in {"and", "or", "the"})
+    raw_parts = [" ".join(re.sub(r"[^A-Za-z0-9_+#.-]+", " ", part).split()) for part in label.split("/")]
+    parts = []
+    for part in raw_parts:
+        words = part.split()
+        while len(words) > 1 and words[-1].casefold() in _GENERIC_TOPIC_WORDS:
+            words.pop()
+        cleaned = " ".join(words)
+        if cleaned and cleaned.casefold() not in {value.casefold() for value in parts}:
+            parts.append(cleaned)
+    if not parts:
+        parts = ["topic"]
+
+    def phrase(value: str) -> str:
+        return f'"{value}"' if " " in value else value
+
+    canonical = phrase(parts[0]) if len(parts) == 1 else f"({' OR '.join(phrase(part) for part in parts)})"
     candidates = [
         {"kind": "canonical", "query": canonical},
-        {"kind": "technical", "query": f"{base} research paper benchmark"},
-        {"kind": "adjacent", "query": f'"{canonical}" findings analysis'},
+        {"kind": "technical", "query": f"{canonical} (research OR paper OR benchmark)"},
+        {"kind": "adjacent", "query": f"{canonical} (findings OR analysis OR result)"},
     ]
     result: list[dict[str, str]] = []
     seen: set[str] = set()
     for item in candidates:
-        query = safe_query(item["query"][:MAX_QUERY_LENGTH])
+        query = safe_query(item["query"])
         normalized = query.casefold()
         if normalized not in seen:
             result.append({"kind": item["kind"], "query": query})
