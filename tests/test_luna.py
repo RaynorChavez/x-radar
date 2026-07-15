@@ -58,14 +58,19 @@ class LunaRunnerTests(unittest.TestCase):
         self.assertEqual([], list((self.root / "var" / "luna").iterdir()))
 
     def test_timeout_is_durable_and_does_not_leave_batch_files(self):
-        with patch("xradar.luna.subprocess.run", side_effect=subprocess.TimeoutExpired(["codex"], 1)):
+        partial = json.dumps({"type": "turn.completed", "usage": {
+            "input_tokens": 900, "cached_input_tokens": 500, "output_tokens": 40,
+        }}) + "\n"
+        timeout = subprocess.TimeoutExpired(["codex"], 1, output=partial.encode())
+        with patch("xradar.luna.subprocess.run", side_effect=timeout):
             with self.assertRaisesRegex(RuntimeError, "exceeded"):
                 invoke(
                     self.conn, {}, schema=RANKING_SCHEMA, prompt="rank", purpose="ranking_batch",
                     runtime_root=self.root, scan_id="scan", batch_id="batch", timeout_seconds=1,
                 )
-        row = self.conn.execute("SELECT status,error FROM luna_invocations").fetchone()
+        row = self.conn.execute("SELECT status,error,billable_tokens FROM luna_invocations").fetchone()
         self.assertEqual("timeout", row["status"])
+        self.assertEqual(440, row["billable_tokens"])
         self.assertEqual([], list((self.root / "var" / "luna").iterdir()))
 
     def test_ranking_schema_enumerates_batch_post_and_topic_ids(self):
