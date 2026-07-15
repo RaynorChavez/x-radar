@@ -63,7 +63,8 @@ def split_quota(total: int, count: int) -> list[int]:
 
 
 def _target(kind: str, url: str, quota: int, *, topic: sqlite3.Row | None = None,
-            handle: str | None = None, query: str | None = None, backfill: bool = False) -> dict[str, Any]:
+            handle: str | None = None, query: str | None = None,
+            query_kind: str | None = None, backfill: bool = False) -> dict[str, Any]:
     item: dict[str, Any] = {
         "id": str(uuid.uuid4()), "kind": kind, "url": validate_x_url(url),
         "quota": max(0, int(quota)), "backfill": backfill,
@@ -74,23 +75,91 @@ def _target(kind: str, url: str, quota: int, *, topic: sqlite3.Row | None = None
         item["handle"] = handle
     if query:
         item["query"] = query
+    if query_kind:
+        item["query_kind"] = query_kind
     return item
 
 
-def _query_pack(topic: sqlite3.Row) -> list[str]:
+def _fallback_query_pack(label: str) -> list[dict[str, str]]:
+    canonical = re.sub(r"[^A-Za-z0-9_+#.-]+", " ", label).strip()
+    canonical = " ".join(canonical.split()) or label
+    base = " ".join(word for word in canonical.split() if word.casefold() not in {"and", "or", "the"})
+    candidates = [
+        {"kind": "canonical", "query": canonical},
+        {"kind": "technical", "query": f"{base} research paper benchmark"},
+        {"kind": "adjacent", "query": f'"{canonical}" findings analysis'},
+    ]
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in candidates:
+        query = safe_query(item["query"][:MAX_QUERY_LENGTH])
+        normalized = query.casefold()
+        if normalized not in seen:
+            result.append({"kind": item["kind"], "query": query})
+            seen.add(normalized)
+    return result
+
+
+def _query_pack(topic: sqlite3.Row) -> list[dict[str, str]]:
     try:
         values = json.loads(topic["query_pack_json"] or "[]")
     except json.JSONDecodeError:
         values = []
-    result: list[str] = []
-    for value in values:
-        try:
-            cleaned = safe_query(value)
-        except ValueError:
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    kinds = ("canonical", "technical", "adjacent")
+    for index, value in enumerate(values):
+        kind = kinds[min(index, len(kinds) - 1)]
+        raw_query = value
+        if isinstance(value, dict):
+            kind = str(value.get("kind") or kind).strip()
+            raw_query = value.get("query")
+        if kind not in kinds:
             continue
-        if cleaned not in result:
-            result.append(cleaned)
-    return result[:3] or [safe_query(topic["label"])]
+        try:
+            cleaned = safe_query(str(raw_query or ""))
+        except (TypeError, ValueError):
+            continue
+        normalized = cleaned.casefold()
+        if normalized not in seen:
+            result.append({"kind": kind, "query": cleaned})
+            seen.add(normalized)
+    for fallback in _fallback_query_pack(topic["label"]):
+        if fallback["query"].casefold() not in seen:
+            result.append(fallback)
+            seen.add(fallback["query"].casefold())
+        if len(result) >= 3:
+            break
+    return result[:3]
+
+
+def query_key(query: str) -> str:
+    return hashlib.sha256(" ".join(query.casefold().split()).encode()).hexdigest()[:16]
+
+
+def _ordered_queries(conn: sqlite3.Connection, topic: sqlite3.Row) -> list[dict[str, str]]:
+    pack = _query_pack(topic)
+    memory = {
+        row["query_key"]: row
+        for row in conn.execute("SELECT * FROM topic_query_memory WHERE topic_key=?", (topic["topic_key"],))
+    }
+    now = utcnow()
+
+    def is_cooled(item: dict[str, str]) -> bool:
+        row = memory.get(query_key(item["query"]))
+        return bool(row and row["cooldown_until"] and str(row["cooldown_until"]) > now)
+
+    def order(item: dict[str, str]) -> tuple[Any, ...]:
+        row = memory.get(query_key(item["query"]))
+        if not row:
+            return (0, 0, "", 0.0)
+        cooled = is_cooled(item)
+        attempts = int(row["attempts"] or 0)
+        quality = (int(row["unique_total"] or 0) + 2 * int(row["kept_total"] or 0)) / max(1, attempts)
+        return (1 if cooled else 0, 1, str(row["last_attempted_at"] or ""), -quality)
+
+    available = [item for item in pack if not is_cooled(item)]
+    return sorted(available or pack, key=order)
 
 
 def _eligible_accounts(conn: sqlite3.Connection, topic_keys: Iterable[str], status: str) -> list[sqlite3.Row]:
@@ -156,9 +225,14 @@ def build_period_plan(conn: sqlite3.Connection, *, request_id: str | None = None
             search_budget += known_budget
             known_budget = 0
 
-        primary_queries = [(topic, _query_pack(topic)[0]) for topic in topics]
+        query_choices = [(topic, _ordered_queries(conn, topic)) for topic in topics]
+        choices_by_topic = {topic["topic_key"]: choices for topic, choices in query_choices}
+        primary_queries = [(topic, choices[0]) for topic, choices in query_choices]
         for quota, (topic, query) in zip(split_quota(search_budget, len(primary_queries)), primary_queries):
-            targets.append(_target("topic_search", search_url(query), quota, topic=topic, query=query))
+            targets.append(_target(
+                "topic_search", search_url(query["query"]), quota, topic=topic,
+                query=query["query"], query_kind=query["kind"],
+            ))
 
         if known_budget and known:
             selected_known = known[:min(6, len(known))]
@@ -174,9 +248,12 @@ def build_period_plan(conn: sqlite3.Connection, *, request_id: str | None = None
             exploration_items.append(_target("explore_account", f"https://x.com/{handle.lstrip('@')}", 0,
                                                     topic=account, handle=handle))
         for topic in topics:
-            pack = _query_pack(topic)
-            query = pack[1] if len(pack) > 1 else f'"{topic["label"]}"'
-            exploration_items.append(_target("explore_query", search_url(query), 0, topic=topic, query=query))
+            pack = choices_by_topic[topic["topic_key"]]
+            query = pack[1] if len(pack) > 1 else {"kind": "adjacent", "query": f'"{topic["label"]}"'}
+            exploration_items.append(_target(
+                "explore_query", search_url(query["query"]), 0, topic=topic,
+                query=query["query"], query_kind=query["kind"],
+            ))
             if len(exploration_items) >= 6:
                 break
         for quota, item in zip(split_quota(exploration_budget, len(exploration_items)), exploration_items):
@@ -185,8 +262,14 @@ def build_period_plan(conn: sqlite3.Connection, *, request_id: str | None = None
             if item.get("handle"):
                 conn.execute("UPDATE topic_account_memory SET last_scanned_at=? WHERE topic_key=? AND handle=?", (now, item["topic_key"], item["handle"]))
 
-        for topic, query in primary_queries:
-            backfill.append(_target("topic_search", search_url(query), 0, topic=topic, query=query, backfill=True))
+        for topic, choices in query_choices:
+            if len(choices) < 3:
+                continue
+            alternate = choices[2]
+            backfill.append(_target(
+                "topic_search", search_url(alternate["query"]), 0, topic=topic,
+                query=alternate["query"], query_kind=alternate["kind"], backfill=True,
+            ))
         backfill.append(_target("home", "https://x.com/home", 0, backfill=True))
 
         conn.executemany("UPDATE topic_state SET last_planned_at=? WHERE topic_key=?", ((now, key) for key in topic_keys))
@@ -201,15 +284,28 @@ def build_period_plan(conn: sqlite3.Connection, *, request_id: str | None = None
     }
 
 
-def set_query_pack(conn: sqlite3.Connection, label: str, queries: list[str], revision: int) -> list[str]:
+def set_query_pack(conn: sqlite3.Connection, label: str, queries: list[Any], revision: int) -> list[dict[str, str]]:
     key = label if re.fullmatch(r"[0-9a-f]{16}", label) and conn.execute("SELECT 1 FROM topic_state WHERE topic_key=?", (label,)).fetchone() else topic_key(label)
-    cleaned: list[str] = []
-    for query in queries:
-        value = safe_query(query)
-        if value not in cleaned:
-            cleaned.append(value)
+    cleaned: list[dict[str, str]] = []
+    seen: set[str] = set()
+    kinds = ("canonical", "technical", "adjacent")
+    for index, query in enumerate(queries):
+        kind = kinds[min(index, len(kinds) - 1)]
+        raw_query = query
+        if isinstance(query, dict):
+            kind = str(query.get("kind") or kind).strip()
+            raw_query = query.get("query")
+        if kind not in kinds:
+            raise ValueError(f"invalid query kind: {kind}")
+        value = safe_query(str(raw_query or ""))
+        normalized = value.casefold()
+        if normalized not in seen:
+            cleaned.append({"kind": kind, "query": value})
+            seen.add(normalized)
     if not cleaned:
-        cleaned = [safe_query(label)]
+        cleaned = _fallback_query_pack(label)
+    if len(cleaned) > 3:
+        raise ValueError("query packs support at most three variants")
     updated = conn.execute("""
         UPDATE topic_state SET query_pack_json=?,query_pack_revision=?,last_changed_at=?
         WHERE topic_key=? AND active=1
@@ -232,7 +328,7 @@ def apply_preferences(conn: sqlite3.Connection, *, instructions: str, topics: li
             INSERT INTO topic_state(topic_key,label,normalized_label,active,added_at,last_changed_at,query_pack_json)
             VALUES(?,?,?,?,?,?,?) ON CONFLICT(topic_key) DO UPDATE SET
               label=excluded.label,normalized_label=excluded.normalized_label,active=1,last_changed_at=excluded.last_changed_at
-        """, (key, label, " ".join(label.casefold().split()), 1, now, now, json.dumps([label])))
+        """, (key, label, " ".join(label.casefold().split()), 1, now, now, json.dumps(_fallback_query_pack(label))))
     conn.execute("""
         INSERT INTO preference_versions(version,instructions,topics_json,effective_at)
         VALUES(?,?,?,?) ON CONFLICT(version) DO NOTHING

@@ -30,16 +30,21 @@ sequentially and stops after 30 minutes. Focused account requests retain their
 provenance rather than duplicating the post.
 
 Curator preferences are revisioned. Adding a topic queues a coalesced bootstrap
-period; removing one affects only future periods. Luna `xhigh` supplies bounded
-query packs and applies the ranking rubric conservatively. The raw envelope is
+period; removing one affects only future periods. Luna `xhigh` supplies three
+bounded, semantically distinct query variants per topic. Local query memory
+rotates variants, records unique/kept yield, cools empty variants, and prevents
+backfill from repeating the query that just failed. The raw envelope is
 untrusted input, and Luna may add evidence for observable bait patterns but
 cannot create a hard block or navigate an account that was not first observed.
 
-Luna emits an auditable five-part score breakdown for every new observation.
+Luna emits an auditable five-part score breakdown through bounded enrichment
+batches. SQLite checkpoints accepted post results so malformed output retries
+only failed items. A deterministic finalizer merges accepted enrichment into
+the untouched raw capture; Luna never generates executable transformation code.
 SQLite and D1 store the component scores, rationales, and penalties alongside
-the final score. The host recalculates the final value from fixed weights so a
-displayed total cannot drift from its breakdown; historical observations are
-never rewritten.
+the final score. The host recalculates the final value and decision from fixed
+weights so a displayed total cannot drift from its breakdown; historical
+observations are never rewritten.
 
 ## Synchronization
 

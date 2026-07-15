@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import math
 import shutil
@@ -153,6 +154,23 @@ CREATE TABLE IF NOT EXISTS topic_state (
     query_pack_revision INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS topic_query_memory (
+    topic_key TEXT NOT NULL REFERENCES topic_state(topic_key),
+    query_key TEXT NOT NULL,
+    query_kind TEXT NOT NULL,
+    query TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    observed_total INTEGER NOT NULL DEFAULT 0,
+    unique_total INTEGER NOT NULL DEFAULT 0,
+    kept_total INTEGER NOT NULL DEFAULT 0,
+    consecutive_empty INTEGER NOT NULL DEFAULT 0,
+    last_attempted_at TEXT,
+    cooldown_until TEXT,
+    PRIMARY KEY(topic_key,query_key)
+);
+CREATE INDEX IF NOT EXISTS topic_query_memory_rotation_idx
+    ON topic_query_memory(topic_key,cooldown_until,last_attempted_at);
+
 CREATE TABLE IF NOT EXISTS topic_account_memory (
     topic_key TEXT NOT NULL REFERENCES topic_state(topic_key),
     handle TEXT NOT NULL,
@@ -173,6 +191,8 @@ CREATE TABLE IF NOT EXISTS run_acquisitions (
     target TEXT NOT NULL,
     topic_key TEXT,
     topic_label TEXT,
+    query_kind TEXT,
+    query TEXT,
     planned_quota INTEGER NOT NULL DEFAULT 0,
     observed_count INTEGER NOT NULL DEFAULT 0,
     unique_count INTEGER NOT NULL DEFAULT 0,
@@ -198,6 +218,40 @@ CREATE TABLE IF NOT EXISTS post_embeddings (
 );
 CREATE INDEX IF NOT EXISTS post_embeddings_model_idx
     ON post_embeddings(model_id, embedded_at);
+
+CREATE TABLE IF NOT EXISTS enrichment_jobs (
+    scan_id TEXT PRIMARY KEY,
+    raw_path TEXT NOT NULL,
+    raw_sha256 TEXT NOT NULL,
+    output_path TEXT NOT NULL,
+    ranking_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','running','ready','complete')),
+    total_items INTEGER NOT NULL,
+    batch_max_items INTEGER NOT NULL,
+    batch_max_chars INTEGER NOT NULL,
+    preference_json TEXT NOT NULL,
+    allowed_topics_json TEXT NOT NULL,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS enrichment_items (
+    scan_id TEXT NOT NULL REFERENCES enrichment_jobs(scan_id) ON DELETE CASCADE,
+    post_id TEXT NOT NULL,
+    observed_index INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','in_progress','failed','accepted')),
+    batch_id TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    enrichment_json TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(scan_id,post_id),
+    UNIQUE(scan_id,observed_index)
+);
+CREATE INDEX IF NOT EXISTS enrichment_items_next_idx
+    ON enrichment_items(scan_id,status,observed_index);
 """
 
 
@@ -245,6 +299,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "preference_version": "INTEGER NOT NULL DEFAULT 0",
         "topic_matches_json": "TEXT NOT NULL DEFAULT '[]'",
         "score_components_json": "TEXT",
+    })
+    _add_columns(conn, "run_acquisitions", {
+        "query_kind": "TEXT", "query": "TEXT",
     })
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS runs_scan_id_idx ON runs(scan_id)")
     conn.execute("""
@@ -556,13 +613,14 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
         for acquisition in acquisitions:
             conn.execute("""
                 INSERT OR IGNORE INTO run_acquisitions(
-                    acquisition_id,run_id,kind,target,topic_key,topic_label,planned_quota,
-                    observed_count,unique_count,status,error,duration_seconds
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    acquisition_id,run_id,kind,target,topic_key,topic_label,query_kind,query,
+                    planned_quota,observed_count,unique_count,status,error,duration_seconds
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 str(acquisition["id"]), run_id, acquisition.get("kind", "unknown"),
                 acquisition.get("url") or acquisition.get("target") or "",
                 acquisition.get("topic_key"), acquisition.get("topic"),
+                acquisition.get("query_kind"), acquisition.get("query"),
                 int(acquisition.get("quota") or acquisition.get("planned_quota") or 0),
                 int(acquisition.get("observed") or acquisition.get("observed_count") or 0),
                 int(acquisition.get("unique") or acquisition.get("unique_count") or 0),
@@ -595,6 +653,7 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
                         VALUES(?,?,?)
                     """, (observation_id, acquisition_id, int(source_index == 0)))
             _update_topic_account_memory(conn, post, captured_at)
+        _record_query_yields(conn, acquisitions, posts, captured_at)
         for signal in signals:
             add_evidence(
                 conn, handle=signal["handle"],
@@ -614,6 +673,58 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
         "scan_id": scan_id, "posts_seen": len(posts), "posts_added": added,
         "duplicates": len(posts) - added, "signals_seen": len(signals),
     }
+
+
+def _record_query_yields(
+    conn: sqlite3.Connection,
+    acquisitions: list[dict[str, Any]],
+    posts: list[dict[str, Any]],
+    observed_at: str,
+) -> None:
+    now = utcnow()
+    for acquisition in acquisitions:
+        if acquisition.get("kind") not in {"topic_search", "explore_query"}:
+            continue
+        topic_key = str(acquisition.get("topic_key") or "").strip()
+        query = " ".join(str(acquisition.get("query") or "").split()).strip()
+        if not topic_key or not query:
+            continue
+        acquisition_id = str(acquisition.get("id") or acquisition.get("acquisition_id") or "")
+        kept = 0
+        for post in posts:
+            sources = post.get("discovery_sources", [])
+            if post.get("decision") == "keep" and any(
+                str(source.get("acquisition_id") or source.get("id") or "") == acquisition_id
+                for source in sources if isinstance(source, dict)
+            ):
+                kept += 1
+        unique = int(acquisition.get("unique") or acquisition.get("unique_count") or 0)
+        observed = int(acquisition.get("observed") or acquisition.get("observed_count") or 0)
+        empty = unique == 0 or acquisition.get("status") == "error"
+        cooldown = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat() if empty else None
+        key = hashlib.sha256(" ".join(query.casefold().split()).encode()).hexdigest()[:16]
+        conn.execute(
+            """
+            INSERT INTO topic_query_memory(
+              topic_key,query_key,query_kind,query,attempts,observed_total,unique_total,
+              kept_total,consecutive_empty,last_attempted_at,cooldown_until
+            ) VALUES(?,?,?,?,1,?,?,?,?,?,?)
+            ON CONFLICT(topic_key,query_key) DO UPDATE SET
+              query_kind=excluded.query_kind,query=excluded.query,
+              attempts=topic_query_memory.attempts+1,
+              observed_total=topic_query_memory.observed_total+excluded.observed_total,
+              unique_total=topic_query_memory.unique_total+excluded.unique_total,
+              kept_total=topic_query_memory.kept_total+excluded.kept_total,
+              consecutive_empty=CASE WHEN excluded.consecutive_empty=1
+                THEN topic_query_memory.consecutive_empty+1 ELSE 0 END,
+              last_attempted_at=excluded.last_attempted_at,
+              cooldown_until=excluded.cooldown_until
+            """,
+            (
+                topic_key, key, acquisition.get("query_kind") or "canonical", query,
+                observed, unique, kept, int(empty), observed_at or now, cooldown,
+            ),
+        )
 
 
 def _update_topic_account_memory(conn: sqlite3.Connection, post: dict[str, Any], observed_at: str) -> None:

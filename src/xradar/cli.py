@@ -29,6 +29,14 @@ from .site_client import (
     mutations, pending_requests, report_progress, send_event, send_heartbeat,
 )
 from .planner import apply_preferences, build_period_plan, set_query_pack
+from .enrichment import (
+    fail_active_batch,
+    finalize_job,
+    job_status,
+    next_batch,
+    start_job,
+    submit_batch,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -117,10 +125,35 @@ def parser() -> argparse.ArgumentParser:
 
     queries = commands.add_parser("topic-queries-set")
     queries.add_argument("topic")
-    queries.add_argument("--query", action="append", required=True)
+    queries.add_argument("--query", action="append", default=[])
+    queries.add_argument("--canonical")
+    queries.add_argument("--technical")
+    queries.add_argument("--adjacent")
+    queries.add_argument("--pack-file")
     queries.add_argument("--revision", type=int, required=True)
 
     commands.add_parser("topic-memory")
+
+    enrichment_start = commands.add_parser("enrichment-start")
+    enrichment_start.add_argument("capture")
+    enrichment_start.add_argument("--output")
+    enrichment_start.add_argument("--batch-items", type=int, default=24)
+    enrichment_start.add_argument("--batch-chars", type=int, default=60_000)
+
+    enrichment_next = commands.add_parser("enrichment-next")
+    enrichment_next.add_argument("scan_id")
+    enrichment_next.add_argument("--output")
+
+    enrichment_submit = commands.add_parser("enrichment-submit")
+    enrichment_submit.add_argument("scan_id")
+    enrichment_submit.add_argument("input")
+
+    enrichment_status = commands.add_parser("enrichment-status")
+    enrichment_status.add_argument("scan_id")
+
+    enrichment_finalize = commands.add_parser("enrichment-finalize")
+    enrichment_finalize.add_argument("scan_id")
+    enrichment_finalize.add_argument("--output")
 
     site_ingest = commands.add_parser("site-ingest")
     site_ingest.add_argument("capture")
@@ -307,7 +340,22 @@ def main(argv: list[str] | None = None) -> int:
         conn.commit()
         print(json.dumps({"output": str(output), "periodId": plan["period_id"], "targetUnique": plan["target_unique"], "targets": len(plan["targets"])}))
     elif args.command == "topic-queries-set":
-        values = set_query_pack(conn, args.topic, args.query, args.revision)
+        structured = [
+            {"kind": kind, "query": value}
+            for kind, value in (
+                ("canonical", args.canonical),
+                ("technical", args.technical),
+                ("adjacent", args.adjacent),
+            )
+            if value
+        ]
+        supplied = structured or args.query
+        if args.pack_file:
+            pack_payload = json.loads(Path(args.pack_file).read_text())
+            supplied = pack_payload.get("queries") if isinstance(pack_payload, dict) else pack_payload
+            if not isinstance(supplied, list):
+                raise ValueError("query pack file must contain an array or {\"queries\": [...]} object")
+        values = set_query_pack(conn, args.topic, supplied, args.revision)
         conn.commit()
         print(json.dumps({"topic": args.topic, "queries": values, "revision": args.revision}))
     elif args.command == "topic-memory":
@@ -324,9 +372,62 @@ def main(argv: list[str] | None = None) -> int:
               last_searched_at AS lastSearchedAt FROM topic_state ORDER BY active DESC,label
         """)
         preference = conn.execute("SELECT value FROM site_state WHERE key='curator_preferences'").fetchone()
+        query_rows = conn.execute("""
+            SELECT topic_key AS topicKey,query_kind AS kind,query,attempts,
+              observed_total AS observedTotal,unique_total AS uniqueTotal,
+              kept_total AS keptTotal,consecutive_empty AS consecutiveEmpty,
+              last_attempted_at AS lastAttemptedAt,cooldown_until AS cooldownUntil
+            FROM topic_query_memory ORDER BY topic_key,last_attempted_at
+        """)
+        preference_value = json.loads(preference["value"]) if preference else {"version": 0, "topics": []}
+        topics = []
+        for row in topic_rows:
+            value = {**dict(row), "queryPack": json.loads(row["queryPackJson"]), "queryPackJson": None}
+            pack = value["queryPack"] if isinstance(value["queryPack"], list) else []
+            kinds = {
+                item.get("kind")
+                for item in pack
+                if isinstance(item, dict) and isinstance(item.get("query"), str)
+            }
+            value["queryPackNeedsRefresh"] = (
+                value["active"] == 1
+                and (not {"canonical", "technical", "adjacent"}.issubset(kinds)
+                     or int(value["queryPackRevision"] or 0) < int(preference_value.get("version") or 0))
+            )
+            topics.append(value)
         print(json.dumps({
-            "preference": json.loads(preference["value"]) if preference else {"version": 0, "topics": []},
-            "topics": [{**dict(row), "queryPack": json.loads(row["queryPackJson"]), "queryPackJson": None} for row in topic_rows],
+            "preference": preference_value,
+            "topics": topics,
             "accounts": [dict(row) for row in rows],
+            "queryMemory": [dict(row) for row in query_rows],
         }, indent=2))
+    elif args.command == "enrichment-start":
+        print(json.dumps(start_job(
+            conn, args.capture, output=args.output,
+            max_items=args.batch_items, max_chars=args.batch_chars,
+        ), indent=2))
+    elif args.command == "enrichment-next":
+        batch = next_batch(conn, args.scan_id)
+        if args.output:
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(batch, indent=2, ensure_ascii=False) + "\n")
+            print(json.dumps({
+                "output": str(output), "scanId": batch["scanId"],
+                "batchId": batch.get("batchId"), "posts": len(batch.get("posts", [])),
+                "ready": batch.get("ready", False), "complete": batch.get("complete", False),
+            }))
+        else:
+            print(json.dumps(batch, indent=2, ensure_ascii=False))
+    elif args.command == "enrichment-submit":
+        try:
+            submission = json.loads(Path(args.input).read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            print(json.dumps(fail_active_batch(conn, args.scan_id, f"invalid submission JSON: {error}"), indent=2))
+        else:
+            print(json.dumps(submit_batch(conn, args.scan_id, submission), indent=2))
+    elif args.command == "enrichment-status":
+        print(json.dumps(job_status(conn, args.scan_id), indent=2))
+    elif args.command == "enrichment-finalize":
+        print(json.dumps(finalize_job(conn, args.scan_id, output=args.output), indent=2))
     return 0

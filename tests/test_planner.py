@@ -1,9 +1,12 @@
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from xradar.db import connect
+from xradar.cli import main as cli_main
 from xradar.planner import (
     MIXED_TARGET, SOURCE_BUDGETS, apply_preferences, build_period_plan,
     safe_query, search_url, set_query_pack, validate_x_url,
@@ -51,10 +54,76 @@ class PeriodPlannerTests(unittest.TestCase):
     def test_query_pack_is_validated_and_cached(self):
         apply_preferences(self.conn, instructions="", topics=["category theory"], version=1)
         values = set_query_pack(self.conn, "category theory", ["category theory", "higher categories"], 1)
-        self.assertEqual(["category theory", "higher categories"], values)
-        self.assertIn("f=live", search_url(values[0]))
+        self.assertEqual([
+            {"kind": "canonical", "query": "category theory"},
+            {"kind": "technical", "query": "higher categories"},
+        ], values)
+        self.assertIn("f=live", search_url(values[0]["query"]))
         with self.assertRaises(ValueError):
             safe_query("https://example.com")
+
+    def test_query_pack_cli_accepts_structured_file_without_shell_interpolation(self):
+        apply_preferences(self.conn, instructions="", topics=["robotics"], version=4)
+        pack = Path(self.temp.name) / "pack.json"
+        pack.write_text(json.dumps({"queries": [
+            {"kind": "canonical", "query": "robotics research"},
+            {"kind": "technical", "query": "robot manipulation benchmark"},
+            {"kind": "adjacent", "query": "embodied AI experiments"},
+        ]}))
+        self.conn.commit()
+        self.conn.close()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            cli_main([
+                "--db", str(Path(self.temp.name) / "radar.sqlite"), "topic-queries-set",
+                "robotics", "--revision", "4", "--pack-file", str(pack),
+            ])
+        self.conn = connect(Path(self.temp.name) / "radar.sqlite")
+        result = json.loads(output.getvalue())
+        self.assertEqual(["canonical", "technical", "adjacent"], [item["kind"] for item in result["queries"]])
+
+    def test_structured_queries_are_distinct_across_primary_exploration_and_backfill(self):
+        apply_preferences(self.conn, instructions="", topics=["AI / AGI / ASI research"], version=1)
+        set_query_pack(self.conn, "AI / AGI / ASI research", [
+            {"kind": "canonical", "query": "artificial general intelligence research"},
+            {"kind": "technical", "query": "AGI evals alignment scaling laws benchmark"},
+            {"kind": "adjacent", "query": "frontier model capabilities research paper"},
+        ], 1)
+        plan = build_period_plan(self.conn)
+        searches = [item for item in [*plan["targets"], *plan["backfill_targets"]] if item.get("query")]
+        queries = [item["query"] for item in searches]
+        self.assertEqual(len(queries), len(set(queries)))
+        self.assertNotIn("AI / AGI / ASI research", queries)
+
+    def test_failed_query_is_cooled_and_not_repeated_in_next_plan(self):
+        apply_preferences(self.conn, instructions="", topics=["robotics"], version=1)
+        key = self.conn.execute("SELECT topic_key FROM topic_state WHERE label='robotics'").fetchone()[0]
+        set_query_pack(self.conn, "robotics", [
+            {"kind": "canonical", "query": "robotics research"},
+            {"kind": "technical", "query": "robot manipulation benchmark"},
+            {"kind": "adjacent", "query": "embodied AI experiments"},
+        ], 1)
+        from xradar.db import ingest_capture
+        ingest_capture(self.conn, {
+            "scan_id": "empty-query", "captured_at": "2026-07-15T00:00:00Z", "source": "x-mixed",
+            "acquisitions": [{
+                "id": "failed", "kind": "topic_search", "url": "https://x.com/search?q=robotics",
+                "topic_key": key, "topic": "robotics", "query_kind": "canonical",
+                "query": "robotics research", "status": "error", "observed": 0, "unique": 0,
+            }],
+            "posts": [],
+        })
+        plan = build_period_plan(self.conn)
+        self.assertNotIn(
+            "robotics research",
+            [item.get("query") for item in [*plan["targets"], *plan["backfill_targets"]]],
+        )
+        memory = self.conn.execute(
+            "SELECT attempts,consecutive_empty,cooldown_until FROM topic_query_memory WHERE topic_key=?",
+            (key,),
+        ).fetchone()
+        self.assertEqual((1, 1), (memory["attempts"], memory["consecutive_empty"]))
+        self.assertIsNotNone(memory["cooldown_until"])
 
     def test_only_read_only_x_targets_are_accepted(self):
         self.assertEqual("https://x.com/home", validate_x_url("https://x.com/home"))
