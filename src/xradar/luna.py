@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -275,10 +276,26 @@ def invoke(
 
 
 def rank_batch(conn: sqlite3.Connection, batch: dict[str, Any], runtime_root: str | Path) -> LunaResult:
+    schema = copy.deepcopy(RANKING_SCHEMA)
+    batch_id = str(batch.get("batchId") or "")
+    posts = batch.get("posts") if isinstance(batch.get("posts"), list) else []
+    post_ids = [str(post.get("post_id") or "") for post in posts if isinstance(post, dict)]
+    allowed = batch.get("allowedTopics") if isinstance(batch.get("allowedTopics"), dict) else {}
+    schema["properties"]["batchId"]["enum"] = [batch_id]
+    results = schema["properties"]["results"]
+    results["minItems"] = len(post_ids)
+    results["maxItems"] = len(post_ids)
+    result_properties = results["items"]["properties"]
+    result_properties["post_id"]["enum"] = post_ids
+    topic_matches = result_properties["topic_matches"]
+    if allowed:
+        topic_matches["items"]["properties"]["topic_key"]["enum"] = sorted(allowed)
+    else:
+        topic_matches["maxItems"] = 0
     return invoke(
-        conn, batch, schema=RANKING_SCHEMA, prompt=RANKING_PROMPT, purpose="ranking_batch",
+        conn, batch, schema=schema, prompt=RANKING_PROMPT, purpose="ranking_batch",
         runtime_root=runtime_root, scan_id=str(batch.get("scanId") or "") or None,
-        batch_id=str(batch.get("batchId") or "") or None,
+        batch_id=batch_id or None,
         timeout_seconds=int(os.environ.get("XRADAR_LUNA_BATCH_TIMEOUT_SECONDS", "360")),
     )
 
