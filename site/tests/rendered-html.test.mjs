@@ -140,6 +140,7 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(ingest, /captured_at=\$\{promoteCanonical/);
   assert.match(ingest, /last_seen_at=excluded\.last_seen_at/);
   assert.match(ingest, /Capture ingest failed/);
+  assert.match(ingest, /runStatus.*partial/s);
   assert.match(feed, /view === "history"/);
   assert.match(feed, /sort === "signal"/);
   assert.match(feed, /downrank.*-.40/s);
@@ -153,6 +154,7 @@ test("ships the X Radar product surface and durable capabilities", async () => {
   assert.match(account, /observation_acquisitions/);
   assert.match(claim, /status='queued'/);
   assert.match(status, /reliability/);
+  assert.match(status, /partial_collection/);
   assert.match(status, /stale_collection/);
   assert.match(progress, /collecting.*ranking.*syncing.*complete.*error/s);
   assert.match(progress, /current\?\.targetUnique/);

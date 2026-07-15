@@ -9,9 +9,23 @@ CODEX_BIN="${XRADAR_CODEX_BIN:-$(command -v codex 2>/dev/null || printf '%s' "$H
 PROMPT="${XRADAR_AUTOMATION_PROMPT:-$ROOT/docs/pi-automation-prompt.md}"
 ORCHESTRATION="${XRADAR_COLLECTOR_ORCHESTRATION:-pipeline}"
 
+run_with_collector_lock() {
+  if /usr/bin/flock -n -E 75 var/collector.lock "$@"; then
+    return 0
+  else
+    status=$?
+  fi
+  if [[ "$status" == "75" ]]; then
+    echo "x-radar collector already active; deferred successfully"
+    return 0
+  fi
+  return "$status"
+}
+
 if [[ "$ORCHESTRATION" == "pipeline" ]]; then
-  exec /usr/bin/flock -n var/collector.lock \
+  run_with_collector_lock \
     /usr/bin/timeout 45m "$ROOT/bin/collect-pipeline"
+  exit $?
 fi
 if [[ "$ORCHESTRATION" != "agent" ]]; then
   echo "XRADAR_COLLECTOR_ORCHESTRATION must be pipeline or agent" >&2
@@ -27,7 +41,7 @@ if [[ "${XRADAR_CODEX_UNSANDBOXED:-0}" == "1" ]]; then
   CODEX_SAFETY_ARGS=(--dangerously-bypass-approvals-and-sandbox)
 fi
 
-exec /usr/bin/flock -n var/collector.lock \
+run_with_collector_lock \
   /usr/bin/timeout 45m "$CODEX_BIN" exec \
   -m gpt-5.6-luna \
   -c model_reasoning_effort='xhigh' \

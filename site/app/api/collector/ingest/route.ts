@@ -82,6 +82,7 @@ async function ingest(request: Request) {
     acquisitions?: Acquisition[];
     posts?: CapturePost[];
     account_signals?: Array<{ handle: string; confidence: number }>;
+    enrichment?: { status?: string; accepted?: number; failed?: number };
     account_reputation?: Array<{
       handle: string; disposition: string; strikePoints: number;
       confidence: number; reasonsJson?: string; notes?: string | null; operatorOverride?: number;
@@ -204,6 +205,7 @@ async function ingest(request: Request) {
   const ingestedAt = new Date().toISOString();
   const durationSeconds = Math.max(0, Math.round((Date.parse(ingestedAt) - Date.parse(capturedAt)) / 1000) || 0);
   const postsAdded = posts.length - existingPosts;
+  const runStatus = payload.enrichment?.status === "partial" ? "partial" : "complete";
   await db.prepare(`INSERT INTO runs(
     scan_id,host,source,target,request_id,captured_at,posts_seen,posts_kept,posts_added,
     duplicates,candidates,discarded,signals_count,media_count,links_count,duration_seconds,status,
@@ -217,7 +219,7 @@ async function ingest(request: Request) {
     payload.account_signals?.length ?? 0,
     posts.reduce((count, post) => count + (post.media?.length ?? 0), 0),
     posts.reduce((count, post) => count + (post.external_links?.length ?? 0), 0),
-    durationSeconds, "complete", payload.schema_version ?? 1, payload.period_id ?? scanId,
+    durationSeconds, runStatus, payload.schema_version ?? 1, payload.period_id ?? scanId,
     payload.preference_version ?? 0, payload.target_unique ?? (payload.source === "x-mixed" ? 150 : 100), ingestedAt,
   ).run();
   const sourceProgress = Object.fromEntries(acquisitions.map((item) => [item.id, {

@@ -77,8 +77,9 @@ class StatelessPipelineTests(unittest.TestCase):
              patch("xradar.pipeline.rank_batch", side_effect=fake_rank):
             result = _enrich(self.conn, self.root, raw, output)
         self.assertEqual(["0", "1"], seen[0])
-        self.assertEqual(["1", "2"], seen[1])
+        self.assertEqual(["1"], seen[1])
         self.assertNotIn("0", seen[1])
+        self.assertEqual(["2"], seen[2])
         self.assertEqual(3, result["posts"])
         self.assertTrue(output.exists())
 
@@ -114,6 +115,32 @@ class StatelessPipelineTests(unittest.TestCase):
             result = _enrich(self.conn, self.root, raw, output)
         self.assertEqual(4, result["posts"])
         self.assertEqual(2, len(thread_names))
+
+    def test_timeout_isolated_to_single_posts_and_finalizes_partial(self):
+        raw = self.root / "var" / "inbox" / "raw-timeout.json"
+        output = self.root / "var" / "inbox" / "capture-timeout.json"
+        raw.write_text(json.dumps({
+            "scan_id": "timeout", "captured_at": "2026-07-15T00:00:00Z", "source": "x-home",
+            "posts": [{
+                "post_id": str(index), "url": f"https://x.com/lab/status/{index}",
+                "handle": "@lab", "text": f"Post {index}",
+            } for index in range(2)],
+        }))
+        seen: list[list[str]] = []
+
+        def timeout_rank(conn, batch, root):
+            seen.append([post["post_id"] for post in batch["posts"]])
+            raise RuntimeError("Luna call exceeded 360 seconds")
+
+        with patch.dict("os.environ", {
+            "XRADAR_LUNA_BATCH_ITEMS": "2", "XRADAR_LUNA_BATCH_CHARS": "20000",
+            "XRADAR_LUNA_CONCURRENCY": "1", "XRADAR_LUNA_MAX_ATTEMPTS": "2",
+        }), patch("xradar.pipeline.rank_batch", side_effect=timeout_rank):
+            result = _enrich(self.conn, self.root, raw, output)
+        self.assertEqual([["0", "1"], ["0"], ["1"]], seen)
+        self.assertEqual(2, result["failedPosts"])
+        self.assertEqual("partial", result["status"])
+        self.assertEqual(2, len(json.loads(output.read_text())["posts"]))
 
     def test_faster_parallel_result_is_checkpointed_before_slower_lease(self):
         raw = self.root / "var" / "inbox" / "raw-completion-order.json"

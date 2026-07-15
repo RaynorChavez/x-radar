@@ -234,7 +234,11 @@ CREATE TABLE IF NOT EXISTS enrichment_jobs (
     last_error TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    completed_at TEXT
+    completed_at TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    finished_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS enrichment_items (
@@ -247,6 +251,8 @@ CREATE TABLE IF NOT EXISTS enrichment_items (
     enrichment_json TEXT,
     last_error TEXT,
     updated_at TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY(scan_id,post_id),
     UNIQUE(scan_id,observed_index)
 );
@@ -323,6 +329,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _add_columns(conn, "run_acquisitions", {
         "query_kind": "TEXT", "query": "TEXT",
     })
+    job_columns = _columns(conn, "enrichment_jobs")
+    _add_columns(conn, "enrichment_jobs", {
+        "state": "TEXT NOT NULL DEFAULT 'pending'",
+        "max_attempts": "INTEGER NOT NULL DEFAULT 3",
+        "warnings_json": "TEXT NOT NULL DEFAULT '[]'",
+        "finished_at": "TEXT",
+    })
+    if "state" not in job_columns:
+        conn.execute("UPDATE enrichment_jobs SET state=status")
+    item_columns = _columns(conn, "enrichment_items")
+    _add_columns(conn, "enrichment_items", {
+        "state": "TEXT NOT NULL DEFAULT 'pending'",
+        "warnings_json": "TEXT NOT NULL DEFAULT '[]'",
+    })
+    if "state" not in item_columns:
+        conn.execute("""
+            UPDATE enrichment_items SET state=CASE status
+              WHEN 'failed' THEN 'retry' ELSE status END
+        """)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS runs_scan_id_idx ON runs(scan_id)")
     conn.execute("""
         UPDATE posts SET xcancel_url =
@@ -682,10 +707,15 @@ def ingest_capture(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
                 confidence=float(signal["confidence"]),
             )
         kept = sum(post.get("decision") == "keep" for post in posts)
+        enrichment = payload.get("enrichment") if isinstance(payload.get("enrichment"), dict) else {}
+        run_status = "partial" if enrichment.get("status") == "partial" else "complete"
+        run_error = None
+        if run_status == "partial":
+            run_error = f"{int(enrichment.get('failed') or 0)} post(s) retained unclassified"
         conn.execute("""
-            UPDATE runs SET finished_at=?,posts_seen=?,posts_kept=?,posts_added=?,status='complete'
+            UPDATE runs SET finished_at=?,posts_seen=?,posts_kept=?,posts_added=?,status=?,error=?
             WHERE id=?
-        """, (utcnow(), len(posts), kept, added, run_id))
+        """, (utcnow(), len(posts), kept, added, run_status, run_error, run_id))
         event = {**payload, "scan_id": scan_id, "captured_at": captured_at,
                  "source": source_name, "target": target, "posts": posts}
         enqueue(conn, f"capture:{scan_id}", "capture", event)

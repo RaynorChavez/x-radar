@@ -4,7 +4,7 @@ export async function GET() {
   try {
     const db = await ensureRadarDb();
     const last = await db.prepare(`SELECT scan_id AS scanId,host,source,captured_at AS capturedAt,
-      posts_seen AS postsSeen,posts_kept AS postsKept,ingested_at AS ingestedAt FROM runs
+      posts_seen AS postsSeen,posts_kept AS postsKept,ingested_at AS ingestedAt,status FROM runs
       ORDER BY datetime(ingested_at) DESC LIMIT 1`).first();
     const counts = await db.prepare(`SELECT
       (SELECT COUNT(*) FROM posts) uniquePosts,
@@ -17,10 +17,11 @@ export async function GET() {
       pending_sync pendingSync,failed_attempts failedAttempts,auth_status authStatus,
       last_error lastError,started_at startedAt,updated_at updatedAt,last_sync_at lastSyncAt,
       last_backup_at lastBackupAt FROM collector_state WHERE id=1`).first<Record<string, unknown>>();
-    const successfulSlots = new Set(recent.results.filter((run) => run.status === "complete").map((run) => run.ingestedAt.slice(0, 13))).size;
+    const successfulSlots = new Set(recent.results.filter((run) => ["complete", "partial"].includes(run.status)).map((run) => run.ingestedAt.slice(0, 13))).size;
     const warnings: Array<{ code: string; level: "warning" | "critical"; message: string }> = [];
     const ageMinutes = (value: unknown) => value ? (Date.now() - Date.parse(String(value))) / 60000 : Infinity;
     if (!last || ageMinutes(last.ingestedAt) > 90) warnings.push({ code: "stale_collection", level: "critical", message: "No completed scan in the past 90 minutes." });
+    if (last?.status === "partial") warnings.push({ code: "partial_collection", level: "warning", message: "The latest scan retained one or more posts that could not be ranked." });
     if (state?.authStatus === "required") warnings.push({ code: "auth_required", level: "critical", message: "The X browser session needs a fresh login." });
     if (Number(state?.pendingSync ?? 0) > 0) warnings.push({ code: "pending_sync", level: "warning", message: `${state?.pendingSync} synchronization event(s) are waiting.` });
     if (Number(state?.failedAttempts ?? 0) > 0) warnings.push({ code: "sync_failures", level: "warning", message: "Dashboard synchronization has retry failures." });
