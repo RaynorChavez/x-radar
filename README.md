@@ -51,9 +51,10 @@ pip install -e '.[collector]'
 cp .env.example .env
 ```
 
-Review [configuration](docs/configuration.md), [authenticate an isolated Firefox
-profile manually](docs/authenticate-x.md), and run `bin/doctor` before enabling
-services.
+Review [configuration](docs/configuration.md), [authenticate Codex](docs/authenticate-codex.md),
+[authenticate an isolated Firefox profile manually](docs/authenticate-x.md),
+and run `bin/doctor --live-model-check` before enabling services. Semantic
+search is optional and has a [reproducible local model installer](docs/semantic-search.md).
 
 ## Repository and data boundaries
 

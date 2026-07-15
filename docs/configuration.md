@@ -12,6 +12,8 @@ X Radar has one codebase and two runtime modes.
 | `XRADAR_ACQUISITION_MODE` | `mixed` normally; `legacy` for rollback | same |
 | `XRADAR_GECKODRIVER` | optional absolute geckodriver path for a dedicated service user | usually omit |
 | `XRADAR_FIREFOX` | optional absolute Firefox binary path | usually omit |
+| `XRADAR_CODEX_BIN` | optional absolute Codex CLI path | same |
+| `XRADAR_CODEX_UNSANDBOXED` | keep `0`; use `1` only inside an independent host sandbox | same |
 | `XRADAR_SEMANTIC_PYTHON` | Python from the isolated semantic environment | same environment Python |
 | `XRADAR_EMBEDDING_MODEL_DIR` | private host model directory | local model directory |
 | `XRADAR_SEMANTIC_HMAC_KEYS` | JSON key-id to secret map; required for Funnel | omit only with explicit local mode |
@@ -38,3 +40,7 @@ The Sites runtime additionally holds `XRADAR_SEMANTIC_UPSTREAM_URL`,
 `XRADAR_SEMANTIC_HMAC_ACTIVE_KEY_ID`, and the matching
 `XRADAR_SEMANTIC_HMAC_KEYS`. These are server-only values. Use a different HMAC
 secret from the ingest token and rotate by temporarily retaining both key IDs.
+
+The curator model is intentionally fixed to `gpt-5.6-luna` with xhigh reasoning
+for collection runs. `bin/doctor --live-model-check` verifies that the installed
+Codex CLI is logged in and that the subscription can access that model.

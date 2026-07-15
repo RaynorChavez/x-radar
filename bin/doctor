@@ -3,6 +3,18 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 failures=0
+live_model_check=0
+
+case "${1:-}" in
+  "") ;;
+  --live-model-check) live_model_check=1 ;;
+  -h|--help)
+    echo "Usage: bin/doctor [--live-model-check]"
+    echo "Checks local prerequisites, Codex login, X profile, configuration, and an optional live Luna request."
+    exit 0
+    ;;
+  *) echo "Unknown option: $1" >&2; exit 2 ;;
+esac
 
 check_command() {
   if command -v "$1" >/dev/null 2>&1; then
@@ -13,21 +25,106 @@ check_command() {
   fi
 }
 
-for command in python3 node npm firefox geckodriver codex flock timeout; do
+for command in python3 node npm firefox geckodriver flock timeout; do
   check_command "$command"
 done
 
 if [[ -f "$ROOT/.env" ]]; then
   printf 'ok   .env\n'
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env"
+  set +a
 else
   printf 'miss .env (copy .env.example and configure it)\n'
   failures=$((failures + 1))
 fi
+
+CODEX_BIN="${XRADAR_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+if [[ -n "$CODEX_BIN" && -x "$CODEX_BIN" ]]; then
+  printf 'ok   codex (%s)\n' "$CODEX_BIN"
+  if "$CODEX_BIN" login status >/dev/null 2>&1; then
+    printf 'ok   Codex login\n'
+  else
+    printf 'miss Codex login (run: %s login --device-auth)\n' "$CODEX_BIN"
+    failures=$((failures + 1))
+  fi
+else
+  printf 'miss codex (install it or set XRADAR_CODEX_BIN)\n'
+  failures=$((failures + 1))
+fi
+
+if command -v python3 >/dev/null 2>&1 \
+    && python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+  printf 'ok   Python >= 3.11\n'
+else
+  printf 'miss Python >= 3.11\n'
+  failures=$((failures + 1))
+fi
+if command -v node >/dev/null 2>&1 \
+    && node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && b>=13) ? 0 : 1)' >/dev/null 2>&1; then
+  printf 'ok   Node >= 22.13\n'
+else
+  printf 'miss Node >= 22.13\n'
+  failures=$((failures + 1))
+fi
+
+if [[ -f "$ROOT/.env" ]]; then
+  if [[ "${XRADAR_MODE:-}" != "split" && "${XRADAR_MODE:-}" != "single" ]]; then
+    printf 'miss XRADAR_MODE must be split or single\n'
+    failures=$((failures + 1))
+  fi
+  if [[ -z "${XRADAR_INGEST_TOKEN:-}" || "${XRADAR_INGEST_TOKEN:-}" == replace-* ]]; then
+    printf 'miss XRADAR_INGEST_TOKEN is still a placeholder\n'
+    failures=$((failures + 1))
+  fi
+  if [[ -z "${XRADAR_SITE_URL:-}" || "${XRADAR_SITE_URL:-}" == *your-private-site* ]]; then
+    printf 'miss XRADAR_SITE_URL is still a placeholder\n'
+    failures=$((failures + 1))
+  fi
+  if [[ "${XRADAR_MODE:-}" == "single" && "${XRADAR_SITE_URL:-}" != "http://127.0.0.1:8787" ]]; then
+    printf 'miss single mode requires XRADAR_SITE_URL=http://127.0.0.1:8787\n'
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ -f "$ROOT/var/firefox-profile/cookies.sqlite" ]]; then
   printf 'ok   persistent Firefox profile\n'
 else
   printf 'miss var/firefox-profile/cookies.sqlite\n'
   failures=$((failures + 1))
+fi
+
+if [[ -n "${XRADAR_EMBEDDING_MODEL_DIR:-}" ]]; then
+  if python3 "$ROOT/tools/install_embedding_model.py" --output "$XRADAR_EMBEDDING_MODEL_DIR" --check >/dev/null; then
+    printf 'ok   semantic embedding model\n'
+  else
+    printf 'miss semantic embedding model (run tools/install_embedding_model.py)\n'
+    failures=$((failures + 1))
+  fi
+else
+  printf 'skip semantic embedding model (optional; XRADAR_EMBEDDING_MODEL_DIR is unset)\n'
+fi
+
+if (( live_model_check == 1 )) && [[ -n "$CODEX_BIN" && -x "$CODEX_BIN" ]]; then
+  result="$(mktemp "${TMPDIR:-/tmp}/x-radar-luna-check.XXXXXX")"
+  if timeout 2m "$CODEX_BIN" exec \
+      -m gpt-5.6-luna \
+      -c model_reasoning_effort=low \
+      --sandbox read-only \
+      -c approval_policy=never \
+      --ephemeral \
+      --ignore-rules \
+      --output-last-message "$result" \
+      -C "$ROOT" \
+      "Reply with exactly XRADAR_LUNA_OK. Do not call tools." >/dev/null 2>&1 \
+      && grep -qx 'XRADAR_LUNA_OK' "$result"; then
+    printf 'ok   live gpt-5.6-luna request\n'
+  else
+    printf 'miss live gpt-5.6-luna request (verify Codex access before enabling the timer)\n'
+    failures=$((failures + 1))
+  fi
+  rm -f "$result"
 fi
 
 if (( failures > 0 )); then

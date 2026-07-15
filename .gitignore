@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+*.egg-info/
 var/*.sqlite
 var/*.sqlite-shm
 var/*.sqlite-wal

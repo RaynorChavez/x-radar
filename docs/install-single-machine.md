@@ -29,12 +29,13 @@ XRADAR_SEMANTIC_LOCAL_MODE=1
 ```
 
 Install Node.js, Firefox, geckodriver, and the Codex CLI, then follow the
-[manual X authentication guide](authenticate-x.md).
+[Codex authentication](authenticate-codex.md) and
+[manual X authentication](authenticate-x.md) guides.
 
 ## 2. Install services
 
 ```bash
-bin/doctor
+bin/doctor --live-model-check
 bin/install-single-machine
 sudo loginctl enable-linger "$USER"
 ```
@@ -47,10 +48,17 @@ Open `http://127.0.0.1:8787` on the host. For remote access, put Tailscale Serve
 or another authenticated reverse proxy in front of the loopback listener. Do
 not bind the dashboard directly to a public interface.
 
-Semantic search remains server-side in this mode too. Point
-`XRADAR_EMBEDDING_MODEL_DIR` at a local BGE ONNX model, run
-`bin/embed-pending`, and keep `bin/semantic-server` on loopback. The dashboard
+Semantic search remains server-side in this mode too. Install the pinned model,
+set its directory in `.env`, then build the initial index:
+
+```bash
+python3 tools/install_embedding_model.py
+bin/embed-pending
+```
+
+Keep `bin/semantic-server` on loopback. The dashboard
 route may use a loopback upstream rather than Tailscale Funnel.
+See [semantic search](semantic-search.md) for the complete configuration.
 
 ## 3. Verify
 
