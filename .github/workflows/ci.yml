@@ -23,7 +23,7 @@ jobs:
       - run: .venv/bin/pip install -e '.[collector,semantic]'
       - run: .venv/bin/python -c 'import numpy, onnxruntime, selenium, transformers, xradar'
       - run: bash -n bin/*
-      - run: python tools/install_embedding_model.py --help
+      - run: .venv/bin/python tools/install_embedding_model.py --help
 
   collector:
     runs-on: ubuntu-latest
