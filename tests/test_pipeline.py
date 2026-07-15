@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from xradar.db import connect
-from xradar.enrichment import next_batch
+from xradar.enrichment import next_batch, submit_batch as submit_enrichment_batch
 from xradar.luna import LunaResult
 from xradar.pipeline import _enrich, _refresh_query_packs
 from xradar.planner import apply_preferences, topic_key
@@ -114,6 +114,43 @@ class StatelessPipelineTests(unittest.TestCase):
             result = _enrich(self.conn, self.root, raw, output)
         self.assertEqual(4, result["posts"])
         self.assertEqual(2, len(thread_names))
+
+    def test_faster_parallel_result_is_checkpointed_before_slower_lease(self):
+        raw = self.root / "var" / "inbox" / "raw-completion-order.json"
+        output = self.root / "var" / "inbox" / "capture-completion-order.json"
+        raw.write_text(json.dumps({
+            "scan_id": "completion-order", "captured_at": "2026-07-15T00:00:00Z",
+            "source": "x-home", "posts": [{
+                "post_id": str(index), "url": f"https://x.com/lab/status/{index}",
+                "handle": "@lab", "text": f"Post {index}",
+            } for index in range(4)],
+        }))
+        faster_submitted = threading.Event()
+        def fake_rank(conn, batch, root):
+            ids = [post["post_id"] for post in batch["posts"]]
+            if ids[0] == "0" and not faster_submitted.wait(timeout=2):
+                raise RuntimeError("faster batch was not checkpointed")
+            return LunaResult({
+                "batchId": batch["batchId"],
+                "results": [{
+                    "post_id": post_id, "topic_matches": [], "score_components": components(),
+                    "reasons": ["Concrete information."], "account_signals": [],
+                } for post_id in ids],
+            }, "inv", {}, 1)
+
+        def observing_submit(conn, scan_id, payload):
+            result = submit_enrichment_batch(conn, scan_id, payload)
+            if any(item["post_id"] == "2" for item in payload["results"]):
+                faster_submitted.set()
+            return result
+
+        with patch.dict("os.environ", {
+            "XRADAR_LUNA_BATCH_ITEMS": "2", "XRADAR_LUNA_BATCH_CHARS": "20000",
+            "XRADAR_LUNA_CONCURRENCY": "2",
+        }), patch("xradar.pipeline.rank_batch", side_effect=fake_rank), \
+             patch("xradar.pipeline.submit_batch", side_effect=observing_submit):
+            result = _enrich(self.conn, self.root, raw, output)
+        self.assertEqual(4, result["posts"])
 
 
 if __name__ == "__main__":
